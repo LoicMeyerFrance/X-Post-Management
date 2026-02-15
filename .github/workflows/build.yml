@@ -95,6 +95,9 @@ jobs:
       - name: Copy Playwright browsers into app bundle
         run: cp -R pw-browsers "dist/X Post Management.app/Contents/MacOS/pw-browsers"
 
+      - name: Ad-hoc codesign the app
+        run: codesign --force --deep -s - "dist/X Post Management.app"
+
       - name: Zip macOS app
         run: cd dist && zip -r -y "X-Post-Management-macOS.zip" "X Post Management.app"
 
