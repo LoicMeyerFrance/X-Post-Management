@@ -4,14 +4,8 @@ from PyInstaller.utils.hooks import collect_data_files
 
 icon_file = 'assets/icon.icns' if sys.platform == 'darwin' else 'assets/icon.ico'
 
-import os
-
 datas = [('ui/dist', 'ui/dist')]
 datas += collect_data_files('playwright_stealth')
-
-# Bundle Playwright browsers (installed via PLAYWRIGHT_BROWSERS_PATH=./pw-browsers)
-if os.path.isdir('pw-browsers'):
-    datas += [('pw-browsers', 'pw-browsers')]
 
 
 a = Analysis(

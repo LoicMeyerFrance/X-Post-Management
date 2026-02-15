@@ -89,8 +89,11 @@ jobs:
           sips -z 1024 1024 assets/logo.png --out icon.iconset/icon_512x512@2x.png
           iconutil -c icns icon.iconset -o assets/icon.icns
 
-      - name: Build executable
+      - name: Build app bundle
         run: pyinstaller "X Post Manager.spec" --distpath dist --clean
+
+      - name: Copy Playwright browsers into app bundle
+        run: cp -R pw-browsers "dist/X Post Management.app/Contents/MacOS/pw-browsers"
 
       - name: Zip macOS app
         run: cd dist && zip -r -y "X-Post-Management-macOS.zip" "X Post Management.app"
