@@ -7,10 +7,15 @@ import sys
 def get_base_dir():
     """Persistent data directory (data, logs, .env).
 
-    In a PyInstaller bundle, this is the folder containing the .exe.
+    In a PyInstaller bundle on Windows, this is the folder containing the .exe.
+    In a macOS .app bundle, this is the folder containing the .app.
     In development, this is the project root (one level up from server/).
     """
     if getattr(sys, 'frozen', False):
+        if sys.platform == 'darwin':
+            # .app/Contents/MacOS/exe → go up to the folder containing the .app
+            app_bundle = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
+            return os.path.dirname(app_bundle)
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
