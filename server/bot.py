@@ -15,7 +15,17 @@ load_dotenv(os.path.join(paths.BASE_DIR, '.env'))
 
 # Point Playwright to bundled browsers when running from PyInstaller
 if getattr(sys, 'frozen', False):
-    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = os.path.join(sys._MEIPASS, 'pw-browsers')
+    import platform
+    if platform.system() == 'Darwin':
+        # macOS .app: pw-browsers is next to the .app bundle
+        # sys.executable = .../X Post Management.app/Contents/MacOS/X Post Management
+        _app_bundle = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
+        _browsers = os.path.join(os.path.dirname(_app_bundle), 'pw-browsers')
+    else:
+        # Windows: pw-browsers is in the _MEIPASS temp dir
+        _browsers = os.path.join(sys._MEIPASS, 'pw-browsers')
+    if os.path.isdir(_browsers):
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = _browsers
 
 logger = logging.getLogger(__name__)
 
