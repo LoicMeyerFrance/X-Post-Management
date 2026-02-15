@@ -93,10 +93,17 @@ jobs:
         run: pyinstaller "X Post Manager.spec" --distpath dist --clean
 
       - name: Copy Playwright browsers into app bundle
-        run: cp -R pw-browsers "dist/X Post Management.app/Contents/MacOS/pw-browsers"
+        run: |
+          cp -R pw-browsers "dist/X Post Management.app/Contents/MacOS/pw-browsers"
+          rm -rf "dist/X Post Management.app/Contents/MacOS/pw-browsers/.links"
 
       - name: Ad-hoc codesign the app
-        run: codesign --force --deep -s - "dist/X Post Management.app"
+        run: |
+          # Sign nested frameworks and apps first
+          find "dist/X Post Management.app/Contents/MacOS/pw-browsers" -name "*.dylib" -exec codesign --force -s - {} \; 2>/dev/null || true
+          find "dist/X Post Management.app/Contents/MacOS/pw-browsers" -name "*.app" -exec codesign --force --deep -s - {} \; 2>/dev/null || true
+          # Sign the main app
+          codesign --force -s - "dist/X Post Management.app"
 
       - name: Zip macOS app
         run: cd dist && zip -r -y "X-Post-Management-macOS.zip" "X Post Management.app"
