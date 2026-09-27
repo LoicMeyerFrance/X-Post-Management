@@ -1,12 +1,20 @@
 # X Post Management
 
-Desktop application to manage and schedule your X (Twitter) posts locally and securely.
+Desktop application to manage and schedule your X (Twitter) posts locally and
+securely — with an assistant that writes and schedules them for you, running on
+your own Claude subscription.
 
 > ### ✅ Up to date for 2026
 >
 > X rebuilt its sign-in and scheduling screens during 2026, and older builds can
 > no longer sign in. **The current release works against the live site**, posts
 > images and video, and no longer opens a blank window on Windows.
+>
+> **New:** an [Assistant](#assistant) tab — ask for three posts about your launch
+> and it drafts them, schedules them and fills your calendar. It drives *your own*
+> [Claude Code](https://code.claude.com), so there is nothing extra to pay for and
+> the app never sees your Claude credentials. It can do what this app does and
+> nothing else: no shell, no files, no web.
 >
 > [![Latest release](https://img.shields.io/github/v/release/LoicMeyerFrance/X-Post-Management?label=latest&color=2563eb)](https://github.com/LoicMeyerFrance/X-Post-Management/releases/latest)
 >
@@ -203,10 +211,13 @@ store, never in a file.
   and 4 hours. The app checks the size and the duration against *your* account
   before uploading anything, then waits while X transcodes, which can take
   several minutes for a large clip.
-- **Assistant: "Claude Code is not installed"**: install it with
-  `npm install -g @anthropic-ai/claude-code`, run `claude` once to sign in, then
-  press *Check again*. A packaged app started from Explorer can also have a
-  narrower `PATH` than your terminal; the app looks in the usual npm locations too.
+- **Assistant: "Claude Code is not installed"**: press **Install** in the
+  Assistant tab and it runs the official installer for you. If you would rather
+  do it by hand, the commands are in [Assistant](#assistant). A packaged app
+  started from Explorer can have a narrower `PATH` than your terminal, so the app
+  also looks in the native-installer, WinGet and npm locations.
+- **Assistant: signed in but the tab still asks**: press *Check again*. The state
+  comes from `claude auth status`, which the app re-reads rather than caching.
 - **Assistant: "the app's tools could not be loaded"**: the MCP server did not
   start. The log has the reason — the most common one is the app's own API not
   answering, which the assistant reports rather than guessing at an answer.
