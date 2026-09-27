@@ -1,6 +1,6 @@
 import { Pencil, Play, Copy, Trash2, RotateCcw, ExternalLink } from 'lucide-react'
+import { MediaThumb } from '@/components/MediaThumb'
 import type { Post } from '@/lib/api'
-import { uploadUrl } from '@/lib/api'
 import { formatDate, timeFromNow, cn } from '@/lib/utils'
 import { useSettings } from '@/contexts/SettingsContext'
 
@@ -63,11 +63,9 @@ export function PostItem({ post, actions, onClick, onEdit, onPostNow, onDuplicat
         </p>
 
         {thumbFile && (
-          <img
-            src={uploadUrl(thumbFile)}
-            alt=""
+          <MediaThumb
+            file={thumbFile}
             className="mt-2 w-24 h-16 object-cover rounded-md border border-border"
-            loading="lazy"
           />
         )}
 

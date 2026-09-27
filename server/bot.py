@@ -717,7 +717,8 @@ def _do_post(text, image_path, scheduled_at=None):
             page.keyboard.type(text, delay=uniform(20, 50))
             _human_delay(0.3, 0.5)
 
-        # Upload image if provided
+        # Upload the media if provided
+        is_video = False
         if image_path and os.path.isfile(image_path):
             file_input = _wait(page, 'input[data-testid="fileInput"]', timeout=3000)
             if not file_input:
@@ -726,11 +727,16 @@ def _do_post(text, image_path, scheduled_at=None):
                 _close_if_visible()
                 return {'success': False, 'error': 'Could not find file input for media upload'}
 
-            logger.info(f"Uploading image: {os.path.basename(image_path)}")
+            is_video = os.path.splitext(image_path)[1].lower() in VIDEO_EXTENSIONS
+            size_mb = os.path.getsize(image_path) / (1024 * 1024)
+            logger.info(f"Uploading {'video' if is_video else 'image'}: "
+                        f"{os.path.basename(image_path)} ({size_mb:.1f} MB)")
             file_input.set_input_files(image_path)
 
-            _wait(page, 'div[data-testid="attachments"]', timeout=15000)
-            _human_delay(0.3, 0.5)
+            ready = _wait_for_media(page, is_video=is_video)
+            if not ready.get('ready'):
+                _close_if_visible()
+                return {'success': False, 'error': ready.get('error', 'Media upload failed')}
 
         # --- Schedule on X natively, or post immediately ---
         if scheduled_at:
@@ -821,6 +827,58 @@ def _verify_scheduled(page, text):
     except Exception as e:
         logger.warning(f"Could not verify the scheduled post: {e}")
         return None
+
+
+VIDEO_EXTENSIONS = ('.mp4', '.mov', '.m4v')
+
+# X transcodes a video after the upload finishes, and keeps the Post button
+# disabled until it is done. A short wait is why video never worked here: the
+# app gave up after fifteen seconds and reported the button as stuck.
+_IMAGE_READY_TIMEOUT = 60
+_VIDEO_READY_TIMEOUT = 15 * 60
+
+
+def _wait_for_media(page, is_video=False):
+    """Wait until X has accepted the media and is ready to post.
+
+    The Post button becoming enabled is the signal: X keeps it disabled while
+    the file uploads and, for a video, while it transcodes.
+    """
+    budget = _VIDEO_READY_TIMEOUT if is_video else _IMAGE_READY_TIMEOUT
+    deadline = monotonic() + budget
+
+    if not _wait(page, 'div[data-testid="attachments"]', timeout=30000):
+        logger.warning("No attachment preview appeared after the upload")
+
+    last_log = 0.0
+    while monotonic() < deadline:
+        # X reports a rejected file through its usual toast.
+        toast = page.query_selector('div[data-testid="toast"]')
+        if toast:
+            message = (toast.inner_text() or '').strip()
+            lowered = message.lower()
+            if any(word in lowered for word in
+                   ('error', 'erreur', 'not supported', 'non pris en charge',
+                    'too long', 'trop long', 'failed', 'échou')):
+                logger.error(f"X refused the media: {message[:160]}")
+                return {'ready': False, 'error': f'X refused the media: {message[:160]}'}
+
+        button = (page.query_selector('button[data-testid="tweetButton"]')
+                  or page.query_selector('div[data-testid="tweetButton"]'))
+        if button and button.get_attribute('aria-disabled') != 'true':
+            logger.info("Media ready")
+            return {'ready': True}
+
+        waited = budget - (deadline - monotonic())
+        if is_video and waited - last_log >= 30:
+            last_log = waited
+            logger.info(f"Still processing the video... ({int(waited)}s)")
+        sleep(1)
+
+    return {'ready': False,
+            'error': f'X did not finish processing the media within {budget // 60} minutes. '
+                     'For a video, check it is MP4 or MOV (H.264/AAC) and within the length '
+                     'your account allows.'}
 
 
 def _click_post(page, text='', scheduled=False):

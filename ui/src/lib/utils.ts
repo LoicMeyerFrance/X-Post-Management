@@ -3,6 +3,25 @@ import { twMerge } from "tailwind-merge"
 import { toast } from 'sonner'
 import type { Locale, TranslationKey } from './i18n'
 
+/** "2 min 20 s", "4 h", "45 s" - never a misleading round number. */
+export function formatDuration(seconds: number): string {
+  const total = Math.round(seconds)
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const secs = total % 60
+  if (hours > 0) return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`
+  if (minutes > 0) return secs > 0 ? `${minutes} min ${secs} s` : `${minutes} min`
+  return `${secs} s`
+}
+
+const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.m4v']
+
+/** Is this stored attachment a video? Matches what the server accepts. */
+export function isVideoFile(nameOrPath: string | null | undefined): boolean {
+  const name = (nameOrPath || '').toLowerCase()
+  return VIDEO_EXTENSIONS.some(ext => name.endsWith(ext))
+}
+
 type ActionResult = { success: boolean; error?: string }
 
 /** Read the outcome off a post once the browser worker has finished with it. */

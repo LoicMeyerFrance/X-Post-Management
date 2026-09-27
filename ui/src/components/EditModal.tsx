@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { MediaThumb } from '@/components/MediaThumb'
 import { X, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Post } from '@/lib/api'
@@ -70,9 +71,8 @@ export function EditModal({ post, charLimit = 280, onSave, onClose }: EditModalP
               <label className="block text-xs font-medium text-text-secondary mb-1.5">{t('edit.media')}</label>
               <div className="flex items-center gap-3">
                 <div className="relative inline-block">
-                  <img
-                    src={api.uploadUrl(thumbFile)}
-                    alt=""
+                  <MediaThumb
+                    file={thumbFile}
                     className="w-20 h-14 object-cover rounded-lg border border-border"
                   />
                 </div>

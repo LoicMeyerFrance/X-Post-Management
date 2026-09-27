@@ -10,7 +10,7 @@ import { useSettings } from '@/contexts/SettingsContext'
 import { MONTHS_LONG, DAYS_LONG } from '@/lib/i18n'
 import * as api from '@/lib/api'
 import type { Post } from '@/lib/api'
-import { toastResult, outcomeOf } from '@/lib/utils'
+import { toastResult, outcomeOf , isVideoFile } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
 const statusDotColors: Record<string, string> = {
@@ -316,6 +316,7 @@ export function Calendar() {
             <TweetPreview
               text={previewPost.text || ''}
               imageUrl={previewPost.image_path?.split(/[/\\]/).pop() ? api.uploadUrl(previewPost.image_path!.split(/[/\\]/).pop()!) : null}
+              isVideo={isVideoFile(previewPost.image_path)}
               scheduledAt={previewPost.scheduled_at}
               profile={profile}
             />

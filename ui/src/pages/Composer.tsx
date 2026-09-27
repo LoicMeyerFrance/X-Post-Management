@@ -11,7 +11,7 @@ import { DateTimePicker } from '@/components/DateTimePicker'
 import { useConfirm } from '@/components/ConfirmModal'
 import { useComposer } from '@/contexts/ComposerContext'
 import { useSettings } from '@/contexts/SettingsContext'
-import { toastResult, outcomeOf } from '@/lib/utils'
+import { toastResult, outcomeOf, formatDuration } from '@/lib/utils'
 import * as api from '@/lib/api'
 import type { Post } from '@/lib/api'
 
@@ -40,29 +40,69 @@ export function Composer() {
 
   const charLimit = profile?.is_verified ? 25000 : 280
 
-  const handleMedia = (file: File) => {
-    if (file.type.startsWith('video/')) {
-      toast.error(t('composer.videoNotSupported'))
-      if (fileInputRef.current) fileInputRef.current.value = ''
-      return
-    }
-    if (!file.type.startsWith('image/')) {
+  // X's own limits. Checking them here saves uploading 400 MB only for X to
+  // refuse it at the end.
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+  const maxVideoBytes = profile?.is_verified
+    ? api.MAX_VIDEO_BYTES_PREMIUM
+    : api.MAX_VIDEO_BYTES_STANDARD
+  const maxVideoSeconds = profile?.is_verified ? 4 * 3600 : 140
+
+  /** Read a video's duration without uploading it. */
+  const videoDuration = (file: File) =>
+    new Promise<number | null>(resolve => {
+      const url = URL.createObjectURL(file)
+      const probe = document.createElement('video')
+      probe.preload = 'metadata'
+      probe.onloadedmetadata = () => {
+        URL.revokeObjectURL(url)
+        resolve(Number.isFinite(probe.duration) ? probe.duration : null)
+      }
+      probe.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
+      probe.src = url
+    })
+
+  const handleMedia = async (file: File) => {
+    const isVideo = file.type.startsWith('video/')
+    const clearInput = () => { if (fileInputRef.current) fileInputRef.current.value = '' }
+
+    if (!isVideo && !file.type.startsWith('image/')) {
       toast.error(t('composer.imageOnly'))
+      clearInput()
       return
     }
-    const maxSize = 5 * 1024 * 1024
-    if (file.size > maxSize) {
-      toast.error(t('composer.imageTooLarge'))
+
+    if (file.size > (isVideo ? maxVideoBytes : MAX_IMAGE_BYTES)) {
+      toast.error(isVideo
+        ? `${t('composer.videoTooLarge')} ${Math.round(maxVideoBytes / 1024 / 1024)} Mo`
+        : t('composer.imageTooLarge'))
+      clearInput()
       return
     }
+
+    if (isVideo) {
+      const seconds = await videoDuration(file)
+      if (seconds !== null && seconds > maxVideoSeconds) {
+        toast.error(
+          `${t('composer.videoTooLong')} ${formatDuration(seconds)}. ` +
+          `${t('composer.videoMaxLength')} ${formatDuration(maxVideoSeconds)}.`,
+          { duration: 6000 },
+        )
+        clearInput()
+        return
+      }
+      if (seconds === null) {
+        // The browser could not read the metadata; X will have the final word.
+        toast.warning(t('composer.videoDurationUnknown'), { duration: 6000 })
+      }
+    }
+
     setImageFile(file)
-    const reader = new FileReader()
-    reader.onload = e => setImagePreview(e.target?.result as string)
-    reader.readAsDataURL(file)
+    setImagePreview(URL.createObjectURL(file))
   }
 
   const removeMedia = () => {
-    if (imagePreview && !imagePreview.startsWith('data:')) URL.revokeObjectURL(imagePreview)
+    if (imagePreview?.startsWith('blob:')) URL.revokeObjectURL(imagePreview)
     setImageFile(null)
     setImagePreview(null)
     if (fileInputRef.current) fileInputRef.current.value = ''
@@ -252,7 +292,15 @@ export function Composer() {
 
                 {imagePreview && (
                   <div className="relative mt-3 inline-block">
-                    <img src={imagePreview} alt="" className="max-h-48 rounded-lg border border-border object-cover" />
+                    {imageFile?.type.startsWith('video/') ? (
+                      <video
+                        src={imagePreview}
+                        controls
+                        className="max-h-48 rounded-lg border border-border"
+                      />
+                    ) : (
+                      <img src={imagePreview} alt="" className="max-h-48 rounded-lg border border-border object-cover" />
+                    )}
                     <button
                       onClick={removeMedia}
                       className="absolute top-2 right-2 w-6 h-6 bg-black/60 text-white rounded-full flex items-center justify-center hover:bg-black/80 transition-colors"
@@ -268,7 +316,7 @@ export function Composer() {
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/*,video/*"
+                      accept="image/png,image/jpeg,image/gif,image/webp,video/mp4,video/quicktime"
                       className="hidden"
                       onChange={e => e.target.files?.[0] && handleMedia(e.target.files[0])}
                     />
@@ -354,6 +402,7 @@ export function Composer() {
           <TweetPreview
             text={text}
             imageUrl={imagePreview}
+            isVideo={imageFile?.type.startsWith('video/') ?? false}
             scheduledAt={scheduledAt || null}
             profile={profile}
           />

@@ -7,11 +7,12 @@ import { useSettings } from '@/contexts/SettingsContext'
 interface TweetPreviewProps {
   text: string
   imageUrl?: string | null
+  isVideo?: boolean
   scheduledAt?: string | null
   profile: Profile | null
 }
 
-export function TweetPreview({ text, imageUrl, scheduledAt, profile }: TweetPreviewProps) {
+export function TweetPreview({ text, imageUrl, isVideo, scheduledAt, profile }: TweetPreviewProps) {
   const { t, locale } = useSettings()
 
   const previewDate = () => {
@@ -51,13 +52,19 @@ export function TweetPreview({ text, imageUrl, scheduledAt, profile }: TweetPrev
         <p className="text-[15px] leading-[1.45] whitespace-pre-wrap break-words text-text">
           {text || <span className="text-text-muted italic">{t('preview.textPlaceholder')}</span>}
         </p>
-        {imageUrl && (
+        {imageUrl && (isVideo ? (
+          <video
+            src={imageUrl}
+            controls
+            className="mt-3 w-full max-h-[280px] rounded-2xl border border-border"
+          />
+        ) : (
           <img
             src={imageUrl}
             alt=""
             className="mt-3 w-full max-h-[280px] object-cover rounded-2xl border border-border"
           />
-        )}
+        ))}
       </div>
 
       {/* Tweet date */}

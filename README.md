@@ -12,7 +12,7 @@ Desktop application to manage and schedule your X (Twitter) posts locally and se
 
 ## Features
 
-- Create and publish posts with text and/or images
+- Create and publish posts with text, images or video
 - Schedule posts in advance (uses X native scheduling)
 - Manage your drafts
 - View publication history
@@ -94,7 +94,11 @@ browsers at once.
 - **"X does not offer the requested minute"**: X's schedule dialog only lists certain
   minutes. Pick a time it offers — the app refuses to schedule at a time you did not
   choose rather than rounding silently.
-- **Videos not supported**: X blocks automated video uploads. Only images are accepted.
+- **Video rejected or stuck**: X takes MP4 and MOV (H.264 video, AAC audio). A
+  standard account is limited to 512 MB and 2 min 20 s; Premium goes up to 16 GB
+  and 4 hours. The app checks the size and the duration against *your* account
+  before uploading anything, then waits while X transcodes, which can take
+  several minutes for a large clip.
 
 ## Security
 

@@ -8,7 +8,7 @@ import { useConfirm } from '@/components/ConfirmModal'
 import { useSettings } from '@/contexts/SettingsContext'
 import * as api from '@/lib/api'
 import type { Post } from '@/lib/api'
-import { cn, toastResult, outcomeOf } from '@/lib/utils'
+import { cn, toastResult, outcomeOf , isVideoFile } from '@/lib/utils'
 
 type Tab = 'posted' | 'error'
 
@@ -204,6 +204,7 @@ export function History() {
             <TweetPreview
               text={previewPost.text || ''}
               imageUrl={thumbFile(previewPost) ? api.uploadUrl(thumbFile(previewPost)!) : null}
+              isVideo={isVideoFile(previewPost.image_path)}
               scheduledAt={previewPost.scheduled_at}
               profile={profile}
             />

@@ -31,6 +31,10 @@ export interface Post {
   tweet_url: string | null
 }
 
+/** X's video ceiling, which depends on the account. */
+export const MAX_VIDEO_BYTES_STANDARD = 512 * 1024 * 1024
+export const MAX_VIDEO_BYTES_PREMIUM = 16 * 1024 * 1024 * 1024
+
 export interface Profile {
   display_name: string
   username: string

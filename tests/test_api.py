@@ -540,6 +540,116 @@ def test_verified_detection(client):
             os.remove(info)
 
 
+
+# An MP4/MOV header: four bytes of box size, then "ftyp".
+MP4 = bytes(4) + b'ftypisom' + b'\x00' * 64
+
+
+def test_video_upload(client):
+    """Videos used to be refused outright. They are accepted now, within X's limits."""
+    section('video attachments')
+
+    import bot
+
+    check('mp4 is recognised as video', appmod.media_kind('clip.mp4', MP4) == 'video')
+    check('mov is recognised as video', appmod.media_kind('clip.mov', MP4) == 'video')
+    check('png is still an image', appmod.media_kind('a.png', PNG) == 'image')
+    check('a png renamed .mp4 is refused', appmod.media_kind('a.mp4', PNG) is None)
+    check('an mp4 renamed .png is refused', appmod.media_kind('a.png', MP4) is None)
+    check('an unknown extension is refused', appmod.media_kind('a.avi', MP4) is None)
+
+    r = client.post('/api/posts', headers=LOCAL, data={
+        'text': 'with a clip', 'status': 'draft',
+        'image': (io.BytesIO(MP4), 'clip.mp4'),
+    }, content_type='multipart/form-data')
+    check('a post with a video is created', r.status_code == 201, r.data[:120])
+    post_id = r.get_json()['id']
+
+    post = client.get(f'/api/posts/{post_id}', headers=LOCAL).get_json()
+    stored = os.path.basename(post['image_path'])
+    check('the video keeps its extension on disk', stored.endswith('.mp4'), stored)
+    served = client.get('/uploads/' + stored, headers=LOCAL)
+    check('and is served back', served.status_code == 200 and served.data == MP4,
+          served.status_code)
+    client.delete(f'/api/posts/{post_id}', headers=LOCAL)
+
+    # A video may be far bigger than an image; the limits are per kind.
+    over_image_limit = MP4 + b'\x00' * (appmod.MAX_IMAGE_SIZE + 1024)
+    r = client.post('/api/posts', headers=LOCAL, data={
+        'status': 'draft', 'image': (io.BytesIO(over_image_limit), 'big.mp4'),
+    }, content_type='multipart/form-data')
+    check('a video larger than the image limit is still accepted',
+          r.status_code == 201, r.status_code)
+    if r.status_code == 201:
+        client.delete(f"/api/posts/{r.get_json()['id']}", headers=LOCAL)
+
+    r = client.post('/api/posts', headers=LOCAL, data={
+        'status': 'draft', 'image': (io.BytesIO(PNG + b'\x00' * appmod.MAX_IMAGE_SIZE),
+                                     'big.png'),
+    }, content_type='multipart/form-data')
+    check('an image over its own limit is refused', r.status_code == 400, r.status_code)
+
+    # A video over its own limit must be refused too. The real ceiling is 512 MB,
+    # so the constant is lowered here rather than pushing half a gigabyte through.
+    real_limit = appmod.MAX_VIDEO_SIZE_STANDARD
+    appmod.MAX_VIDEO_SIZE_STANDARD = 64 * 1024
+    try:
+        too_big = MP4 + b'\x00' * (64 * 1024)
+        r = client.post('/api/posts', headers=LOCAL, data={
+            'status': 'draft', 'image': (io.BytesIO(too_big), 'huge.mp4'),
+        }, content_type='multipart/form-data')
+        check('a video over the video limit is refused', r.status_code == 400, r.status_code)
+        check('and the message names the video', b'Video too large' in r.data, r.data[:90])
+
+        r = client.post('/api/posts', headers=LOCAL, data={
+            'status': 'draft', 'image': (io.BytesIO(MP4 + b'\x00' * 1024), 'ok.mp4'),
+        }, content_type='multipart/form-data')
+        check('one just under is accepted', r.status_code == 201, r.status_code)
+        if r.status_code == 201:
+            client.delete(f"/api/posts/{r.get_json()['id']}", headers=LOCAL)
+    finally:
+        appmod.MAX_VIDEO_SIZE_STANDARD = real_limit
+
+    check('the documented size limits are the ones in force',
+          appmod.MAX_IMAGE_SIZE == 5 * 1024 * 1024
+          and appmod.MAX_VIDEO_SIZE_STANDARD == 512 * 1024 * 1024,
+          (appmod.MAX_IMAGE_SIZE, appmod.MAX_VIDEO_SIZE_STANDARD))
+    check('the request cap leaves room for the largest video X allows',
+          appmod.MAX_REQUEST_SIZE > appmod.MAX_VIDEO_SIZE_PREMIUM)
+
+    # The ceiling follows the account: X gives Premium far more room.
+    import json as _json
+    info = os.path.join(appmod.DATA_DIR, 'profile_info.json')
+    try:
+        with open(info, 'w', encoding='utf-8') as fh:
+            _json.dump({'is_verified': False}, fh)
+        check('a standard account is capped at 512 MB',
+              appmod.video_size_limit() == 512 * 1024 * 1024, appmod.video_size_limit())
+        with open(info, 'w', encoding='utf-8') as fh:
+            _json.dump({'is_verified': True}, fh)
+        check('a Premium account gets the larger ceiling X allows',
+              appmod.video_size_limit() == 16 * 1024 * 1024 * 1024,
+              appmod.video_size_limit())
+        check('and the image limit does not move',
+              appmod.MAX_IMAGE_SIZE == 5 * 1024 * 1024)
+    finally:
+        if os.path.isfile(info):
+            os.remove(info)
+
+    # A body declared far too large is refused from its header alone.
+    r = client.post('/api/posts', headers={**LOCAL, 'Content-Length': str(20 * 1024**3)},
+                    data={'status': 'draft'})
+    check('an absurd Content-Length is refused early',
+          r.status_code in (413, 400), r.status_code)
+
+    # The browser side has to wait for X to transcode.
+    check('videos get a far longer processing budget than images',
+          bot._VIDEO_READY_TIMEOUT >= 10 * 60 and bot._IMAGE_READY_TIMEOUT <= 120,
+          (bot._IMAGE_READY_TIMEOUT, bot._VIDEO_READY_TIMEOUT))
+    check('the bot knows the video extensions',
+          set(bot.VIDEO_EXTENSIONS) == {'.mp4', '.mov', '.m4v'}, bot.VIDEO_EXTENSIONS)
+
+
 def main():
     database.init_db()
     client = appmod.app.test_client()
@@ -554,6 +664,7 @@ def main():
     test_browser_mode_hint(client)
     test_check_posts_on_x(client)
     test_verified_detection(client)
+    test_video_upload(client)
     test_env_round_trip()
 
     print(f'\n{len(passed)} passed, {len(failed)} failed')

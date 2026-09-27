@@ -51,9 +51,22 @@ PROFILE_INFO_PATH = os.path.join(DATA_DIR, 'profile_info.json')
 PREFERENCES_PATH = os.path.join(DATA_DIR, 'preferences.json')
 PROFILE_PICTURE_NAME = 'profile_picture.jpg'
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
-MAX_IMAGE_SIZE = 5 * 1024 * 1024        # 5 MB, the limit X accepts for images
-MAX_REQUEST_SIZE = 8 * 1024 * 1024      # request bodies above this are refused outright
+# X accepts MP4 and MOV (H.264 + AAC). Everything else is rejected by its own
+# uploader, so there is no point letting it through here.
+ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+ALLOWED_VIDEO_EXTENSIONS = {'mp4', 'mov', 'm4v'}
+ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | ALLOWED_VIDEO_EXTENSIONS
+
+MAX_IMAGE_SIZE = 5 * 1024 * 1024              # 5 MB, what X takes for an image
+
+# X's video ceiling depends on the account: 512 MB for everyone, far more for
+# Premium. Capping a Premium account at the standard limit would refuse files X
+# would have accepted.
+MAX_VIDEO_SIZE_STANDARD = 512 * 1024 * 1024
+MAX_VIDEO_SIZE_PREMIUM = 16 * 1024 * 1024 * 1024
+
+# The hard ceiling Werkzeug enforces; the per-account limit is checked on top.
+MAX_REQUEST_SIZE = MAX_VIDEO_SIZE_PREMIUM + 8 * 1024 * 1024
 MAX_TEXT_LENGTH = 30_000                # hard ceiling above any X plan's limit
 
 DEFAULT_PORT = int(os.getenv('PORT', '5000'))
@@ -117,13 +130,27 @@ def write_json_file(path, data):
     os.replace(tmp_path, path)
 
 
+def is_premium():
+    """Does the stored profile say this account is verified?"""
+    return bool(read_json_file(PROFILE_INFO_PATH).get('is_verified'))
+
+
 def char_limit():
     """X Premium accounts get a much longer limit."""
-    return 25_000 if read_json_file(PROFILE_INFO_PATH).get('is_verified') else 280
+    return 25_000 if is_premium() else 280
+
+
+def video_size_limit():
+    """The biggest video X will take for this account."""
+    return MAX_VIDEO_SIZE_PREMIUM if is_premium() else MAX_VIDEO_SIZE_STANDARD
+
+
+def file_extension(filename):
+    return filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
 
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return file_extension(filename) in ALLOWED_EXTENSIONS
 
 
 # Magic bytes for the formats we accept. Checking the content, not just the
@@ -169,6 +196,21 @@ def looks_like_image(head):
         if marker is None or head[8:12] == marker:
             return True
     return False
+
+
+def looks_like_video(head):
+    """MP4 and MOV are ISO base media files: bytes 4-8 spell 'ftyp'."""
+    return len(head) >= 12 and head[4:8] == b'ftyp'
+
+
+def media_kind(filename, head):
+    """'image', 'video' or None when the bytes do not back up the extension."""
+    extension = file_extension(filename)
+    if extension in ALLOWED_IMAGE_EXTENSIONS and looks_like_image(head):
+        return 'image'
+    if extension in ALLOWED_VIDEO_EXTENSIONS and looks_like_video(head):
+        return 'video'
+    return None
 
 
 def parse_iso_datetime(value):
@@ -273,6 +315,13 @@ def api_create_post():
     elif scheduled_at and parse_iso_datetime(scheduled_at) is None:
         return jsonify({'error': 'Invalid date/time format'}), 400
 
+    # Refuse an oversized body from its Content-Length, before Werkzeug spools
+    # gigabytes to disk only for the size check below to throw them away.
+    declared = request.content_length or 0
+    if declared > video_size_limit() + 8 * 1024 * 1024:
+        return jsonify({'error': f'Upload too large (max '
+                                 f'{video_size_limit() // 1024 // 1024}MB for your account)'}), 413
+
     # Validate the upload fully before writing anything to disk, so a rejected
     # request never leaves an orphaned file in data/uploads.
     upload = request.files.get('image')
@@ -284,18 +333,23 @@ def api_create_post():
     image_path = ''
     if has_upload:
         if not allowed_file(upload.filename):
-            return jsonify({'error': 'Format not supported (use png, jpg, jpeg, gif, webp)'}), 400
+            return jsonify({'error': 'Format not supported (images: png, jpg, jpeg, gif, '
+                                     'webp - videos: mp4, mov)'}), 400
+
+        head = upload.read(12)
+        upload.seek(0)
+        kind = media_kind(upload.filename, head)
+        if kind is None:
+            return jsonify({'error': 'This file is not a valid image or video '
+                                     '(X accepts png, jpg, gif, webp, mp4, mov)'}), 400
 
         upload.seek(0, os.SEEK_END)
         size = upload.tell()
         upload.seek(0)
-        if size > MAX_IMAGE_SIZE:
-            return jsonify({'error': f'File too large (max {MAX_IMAGE_SIZE // 1024 // 1024}MB)'}), 400
-
-        head = upload.read(12)
-        upload.seek(0)
-        if not looks_like_image(head):
-            return jsonify({'error': 'This file is not a valid image'}), 400
+        limit = video_size_limit() if kind == 'video' else MAX_IMAGE_SIZE
+        if size > limit:
+            return jsonify({'error': f'{kind.capitalize()} too large '
+                                     f'(max {limit // 1024 // 1024}MB)'}), 400
 
         # A random name avoids collisions between two uploads in the same second
         # and keeps any user-controlled string out of the filesystem path.

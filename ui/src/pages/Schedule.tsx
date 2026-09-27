@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { MediaThumb } from '@/components/MediaThumb'
 import { CalendarClock, Pencil, Play, Copy, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
@@ -180,11 +181,9 @@ export function Schedule() {
                           </p>
                           {thumbFile && (
                             <div className="relative mt-2 inline-block">
-                              <img
-                                src={api.uploadUrl(thumbFile)}
-                                alt=""
+                              <MediaThumb
+                                file={thumbFile}
                                 className="w-16 h-12 object-cover rounded-md border border-border"
-                                loading="lazy"
                               />
                               <button
                                 disabled={isPosting}
