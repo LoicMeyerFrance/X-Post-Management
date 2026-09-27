@@ -44,8 +44,9 @@ On first launch, a **Setup Wizard** guides you through 4 steps:
 
 Once complete, you're ready to compose, schedule and manage your posts.
 
-> **Tip:** Leave Chrome profile and Chrome path empty (default) to use the browser
-> bundled with the app.
+> **Tip:** leave everything else alone. The app finds Chrome by itself and keeps
+> its own browser session — see *Advanced* below if you really need to point it
+> somewhere specific.
 
 ## Configuration Options
 
@@ -55,8 +56,6 @@ Configuration is stored in a `.env` file (created automatically by the Setup Wiz
 |-----|-------------|---------|
 | `X_USERNAME` | Your X username (without @) | |
 | `X_PASSWORD` | Your X password | |
-| `CHROME_PROFILE_DIR` | Path to Chrome profile directory | empty (uses `data/chrome_profile`) |
-| `CHROME_PATH` | Path to Chrome executable | empty (uses the bundled Chromium) |
 | `HEADLESS` | `true` for invisible browser, `false` to see it | `true` |
 | `CHECK_INTERVAL_SECONDS` | Check frequency for scheduled posts (5-3600) | `15` |
 | `MAX_RETRIES` | Number of retries on failure (0-10) | `1` |
@@ -66,6 +65,21 @@ Configuration is stored in a `.env` file (created automatically by the Setup Wiz
 Values are validated when saved: a bad username, an out-of-range interval or a
 non-numeric retry count is rejected with a clear message instead of failing
 later. Quotes, spaces and backslashes in your password are preserved exactly.
+
+### Advanced: forcing a specific Chrome
+
+**You should not need these.** The app finds Chrome on its own and keeps its own
+browser session. They exist only to point it at a particular installation, and
+they are behind *Advanced options* in **Settings > Configuration**.
+
+| Key | What it does | Left empty (recommended) |
+|-----|--------------|--------------------------|
+| `CHROME_PATH` | Use this Chrome executable | the app detects your installed Chrome, and falls back to the browser shipped with it |
+| `CHROME_PROFILE_DIR` | Reuse this Chrome profile | the app keeps its own session in `data/chrome_profile` |
+
+If you do set `CHROME_PROFILE_DIR` to one of your real Chrome profiles, **that
+Chrome has to stay closed** while the app runs — a profile cannot be open in two
+browsers at once.
 
 ## Troubleshooting
 
