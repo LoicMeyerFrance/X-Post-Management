@@ -125,9 +125,15 @@ def test_secrets(client):
     check('a missing file is a real 404, not the SPA shell',
           client.get('/.env', headers=LOCAL).status_code == 404,
           client.get('/.env', headers=LOCAL).status_code)
-    check('a client-side route still gets the SPA shell',
-          client.get('/schedule', headers=LOCAL).status_code == 200,
-          client.get('/schedule', headers=LOCAL).status_code)
+    # Only meaningful once the frontend has been built; CI runs the tests first.
+    if os.path.isfile(os.path.join(appmod.FRONTEND_DIR, 'index.html')):
+        check('a client-side route still gets the SPA shell',
+              client.get('/schedule', headers=LOCAL).status_code == 200,
+              client.get('/schedule', headers=LOCAL).status_code)
+    else:
+        route = client.get('/schedule', headers=LOCAL)
+        check('without a build, a client-side route says so rather than leaking',
+              route.status_code == 404 and route.is_json, route.status_code)
 
 
 def test_uploads(client):

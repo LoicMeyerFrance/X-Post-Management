@@ -29,18 +29,18 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Run tests
-        run: |
-          python tests/test_api.py
-          python tests/test_schedule.py
-          python tests/test_security.py
-
       - name: Lint and build frontend
         working-directory: ui
         run: |
           npm ci
           npm run lint
           npm run build
+
+      - name: Run tests
+        run: |
+          python tests/test_api.py
+          python tests/test_schedule.py
+          python tests/test_security.py
 
       - name: Audit frontend dependencies
         working-directory: ui
