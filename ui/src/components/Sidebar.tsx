@@ -112,7 +112,7 @@ export function Sidebar({ activePage, onNavigate }: SidebarProps) {
           <p className="text-[10px] text-text-muted leading-relaxed">
             Made by <span className="font-medium text-text-secondary">Loic Meyer</span>
           </p>
-          <span className="text-[10px] text-text-muted font-mono">v1.0.0</span>
+          <span className="text-[10px] text-text-muted font-mono">v{__APP_VERSION__}</span>
         </div>
         <div className="flex items-center gap-3 mt-1.5">
           <a

@@ -12,12 +12,19 @@ export function Logs() {
   const [autoRefresh, setAutoRefresh] = useState(true)
   const preRef = useRef<HTMLPreElement>(null)
 
+  // Holds the fingerprint of the tail we already have, so an unchanged poll
+  // costs a few bytes instead of the whole log again.
+  const fingerprintRef = useRef<string | undefined>(undefined)
+
   const refresh = useCallback(async () => {
     try {
-      const data = await api.fetchLogs()
-      setLogs(data.logs || t('logs.noLogs'))
-      if (preRef.current) {
-        preRef.current.scrollTop = preRef.current.scrollHeight
+      const data = await api.fetchLogs(fingerprintRef.current)
+      if (!data.unchanged) {
+        setLogs(data.logs || t('logs.noLogs'))
+        fingerprintRef.current = data.fingerprint
+        if (preRef.current) {
+          preRef.current.scrollTop = preRef.current.scrollHeight
+        }
       }
     } catch { /* ignore */ }
     finally { setLoading(false) }

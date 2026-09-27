@@ -55,8 +55,13 @@ export interface ProfileStats {
   history: FollowerSnapshot[]
 }
 
-export async function fetchPosts(status?: string): Promise<Post[]> {
-  const url = status ? `${BASE}/api/posts?status=${status}` : `${BASE}/api/posts`
+/** Fetch every post, or only those in the given status(es) - the server
+ *  accepts a comma-separated list, so one round-trip covers several. */
+export async function fetchPosts(status?: string | string[]): Promise<Post[]> {
+  const statuses = Array.isArray(status) ? status.join(',') : status
+  const url = statuses
+    ? `${BASE}/api/posts?status=${encodeURIComponent(statuses)}`
+    : `${BASE}/api/posts`
   const res = await fetch(url)
   return handleResponse<Post[]>(res)
 }
@@ -85,19 +90,44 @@ export async function deletePost(id: number): Promise<void> {
   if (!res.ok) throw new ApiError(res.status, res.statusText)
 }
 
-export async function postNow(id: number): Promise<{ success: boolean; error?: string }> {
+/** The server hands the work to the browser and answers at once; the outcome
+ *  shows up on the post itself. */
+export interface Queued {
+  queued: boolean
+  id: number
+  status: Post['status']
+}
+
+export async function postNow(id: number): Promise<Queued> {
   const res = await fetch(`${BASE}/api/posts/${id}/post-now`, { method: 'POST' })
-  return handleResponse<{ success: boolean; error?: string }>(res)
+  return handleResponse<Queued>(res)
 }
 
-export async function scheduleNow(id: number): Promise<{ success: boolean; error?: string }> {
+export async function scheduleNow(id: number): Promise<Queued> {
   const res = await fetch(`${BASE}/api/posts/${id}/schedule-now`, { method: 'POST' })
-  return handleResponse<{ success: boolean; error?: string }>(res)
+  return handleResponse<Queued>(res)
 }
 
-export async function retryPost(id: number): Promise<{ success: boolean; error?: string }> {
+export async function retryPost(id: number): Promise<Queued> {
   const res = await fetch(`${BASE}/api/posts/${id}/retry`, { method: 'POST' })
-  return handleResponse<{ success: boolean; error?: string }>(res)
+  return handleResponse<Queued>(res)
+}
+
+/** Statuses the browser worker is still holding the post in. */
+const IN_FLIGHT: Post['status'][] = ['posting', 'scheduling']
+
+/** Watch a post until the browser worker is finished with it. */
+export async function waitForPost(
+  id: number,
+  { timeoutMs = 360000, intervalMs = 1500 } = {},
+): Promise<Post> {
+  const deadline = Date.now() + timeoutMs
+  let post = await fetchPost(id)
+  while (IN_FLIGHT.includes(post.status) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+    post = await fetchPost(id)
+  }
+  return post
 }
 
 export async function removeMedia(id: number): Promise<{ success: boolean }> {
@@ -140,9 +170,17 @@ export async function fetchProfileStats(): Promise<ProfileStats> {
   return handleResponse<ProfileStats>(res)
 }
 
-export async function fetchLogs(): Promise<{ logs: string }> {
-  const res = await fetch(`${BASE}/api/logs`)
-  return handleResponse<{ logs: string }>(res)
+export interface LogsResult {
+  logs?: string
+  fingerprint?: string
+  unchanged?: boolean
+}
+
+/** Pass the fingerprint you already hold to skip re-downloading the same tail. */
+export async function fetchLogs(fingerprint?: string): Promise<LogsResult> {
+  const query = fingerprint ? `?fingerprint=${encodeURIComponent(fingerprint)}` : ''
+  const res = await fetch(`${BASE}/api/logs${query}`)
+  return handleResponse<LogsResult>(res)
 }
 
 export async function fetchPreferences(): Promise<Record<string, string>> {
@@ -196,12 +234,30 @@ export async function detectChrome(): Promise<{ chrome_path: string | null; prof
   return handleResponse<{ chrome_path: string | null; profile_dir: string | null; detected: boolean }>(res)
 }
 
-export async function connectGoogle(): Promise<{ success: boolean; error?: string; message?: string }> {
-  const res = await fetch(`${BASE}/api/settings/connect-google`, { method: 'POST' })
-  return handleResponse<{ success: boolean; error?: string; message?: string }>(res)
+export interface ConnectResult {
+  success: boolean
+  error?: string
+  message?: string
+  rate_limited?: boolean
 }
 
-export async function checkGoogleConnected(): Promise<{ connected: boolean; error?: string }> {
-  const res = await fetch(`${BASE}/api/settings/check-google`)
-  return handleResponse<{ connected: boolean; error?: string }>(res)
+/** Sign in to X in a visible window. Long-running: X may ask for a code, and
+ *  the server waits up to 5 minutes for the user to answer it. */
+export async function connectX(): Promise<ConnectResult> {
+  const res = await fetch(`${BASE}/api/settings/connect-x`, { method: 'POST' })
+  return handleResponse<ConnectResult>(res)
+}
+
+export interface ConnectionStatus {
+  connected: boolean
+  username?: string
+  checked_at?: string
+  reason?: string
+  error?: string
+}
+
+/** Last known connection state. Cheap - never opens a browser. */
+export async function fetchConnectionStatus(): Promise<ConnectionStatus> {
+  const res = await fetch(`${BASE}/api/settings/connection-status`)
+  return handleResponse<ConnectionStatus>(res)
 }

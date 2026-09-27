@@ -1,6 +1,34 @@
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
-import type { Locale } from './i18n'
+import { toast } from 'sonner'
+import type { Locale, TranslationKey } from './i18n'
+
+type ActionResult = { success: boolean; error?: string }
+
+/** Read the outcome off a post once the browser worker has finished with it. */
+export function outcomeOf(
+  post: { status: string; error_message: string | null },
+  expected: string,
+): ActionResult {
+  return {
+    success: post.status === expected,
+    error: post.error_message || undefined,
+  }
+}
+
+/** Report the outcome of a bot action, surfacing the server's own error
+ *  message rather than a generic one. */
+export function toastResult(
+  result: ActionResult,
+  successMessage: string,
+  t: (key: TranslationKey) => string,
+) {
+  if (result.success) {
+    toast.success(successMessage)
+  } else {
+    toast.error(`${t('common.errorPrefix')} : ${result.error || t('common.unknownError')}`)
+  }
+}
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))

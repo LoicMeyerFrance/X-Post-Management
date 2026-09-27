@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Wifi, RefreshCw, Loader2, HelpCircle, X, Save, Pencil, AlertCircle, Trash2, BadgeCheck, Search, Chrome, Monitor, EyeOff } from 'lucide-react'
+import { Wifi, RefreshCw, Loader2, HelpCircle, X, Save, Pencil, AlertCircle, Trash2, BadgeCheck, Search, LogIn, Monitor, EyeOff } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
 import { useConfirm } from '@/components/ConfirmModal'
@@ -7,7 +7,7 @@ import { useSettings } from '@/contexts/SettingsContext'
 import * as api from '@/lib/api'
 
 export function Settings() {
-  const { locale, setLocale, t, configured, recheckConfig, googleConnected, checkingGoogle, recheckGoogle } = useSettings()
+  const { locale, setLocale, t, configured, recheckConfig, xConnected, checkingConnection, recheckConnection } = useSettings()
   const confirm = useConfirm()
   const [profile, setProfile] = useState<api.Profile | null>(null)
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string; needs_manual_intervention?: boolean } | null>(null)
@@ -48,7 +48,8 @@ export function Settings() {
     try {
       const result = await api.testConnection()
       setTestResult(result)
-      result.success ? toast.success(t('settings.testSuccessToast')) : toast.error(t('settings.testFailed'))
+      if (result.success) toast.success(t('settings.testSuccessToast'))
+      else toast.error(t('settings.testFailed'))
     } catch {
       setTestResult({ success: false, error: t('settings.connectionServerError') })
       toast.error(t('common.serverError'))
@@ -114,16 +115,23 @@ export function Settings() {
     }
   }
 
-  const handleConnectGoogle = async () => {
+  const [connectingX, setConnectingX] = useState(false)
+
+  const handleConnectX = async () => {
+    setConnectingX(true)
+    toast.info(t('settings.connectXOpening'))
     try {
-      const result = await api.connectGoogle()
-      if (!result.success) {
-        toast.error(result.error || t('settings.errorUnknown'))
+      const result = await api.connectX()
+      if (result.success) {
+        toast.success(t('settings.connectXSuccess'))
+      } else {
+        toast.error(result.error || t('settings.connectXFailed'))
       }
-      // Always re-check Google status after the flow completes
-      await recheckGoogle()
+      await recheckConnection()
     } catch {
       toast.error(t('common.serverError'))
+    } finally {
+      setConnectingX(false)
     }
   }
 
@@ -200,7 +208,7 @@ export function Settings() {
               <li><strong>{t('settings.labelBrowser')}</strong> : {t('settings.envHeadlessToggle')}</li>
               <li><strong>{t('settings.labelCheckInterval')}</strong> : {t('settings.envInterval')}</li>
               <li><strong>{t('settings.labelMaxRetries')}</strong> : {t('settings.envMaxRetries')}</li>
-              <li><strong>{t('settings.connectGoogle')}</strong> : {t('settings.connectGoogleHelp')}</li>
+              <li><strong>{t('settings.connectX')}</strong> : {t('settings.connectXHelp')}</li>
             </ul>
 
             <h5 className="text-xs font-semibold text-text mt-3 mb-2">{t('settings.chromePathsTitle')}</h5>
@@ -279,26 +287,26 @@ C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`}</pre>
                 )}
               </div>
             ))}
-            {/* Connect to Google */}
+            {/* Connect to X */}
             <div className="flex items-center gap-3">
-              <label className="w-52 shrink-0 text-xs font-medium text-text">{t('settings.connectGoogle')}</label>
+              <label className="w-52 shrink-0 text-xs font-medium text-text">{t('settings.connectX')}</label>
               <div className="flex-1">
                 <button
                   type="button"
-                  onClick={handleConnectGoogle}
-                  disabled={checkingGoogle}
+                  onClick={handleConnectX}
+                  disabled={checkingConnection || connectingX}
                   className={`inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md transition-colors disabled:opacity-50 ${
-                    googleConnected === true
+                    xConnected === true
                       ? 'text-green-700 dark:text-green-400 border-2 border-green-500 hover:bg-green-50 dark:hover:bg-green-950/30'
-                      : googleConnected === false
+                      : xConnected === false
                         ? 'text-red-700 dark:text-red-400 border-2 border-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
                         : 'text-text-secondary border border-border hover:bg-bg-hover'
                   }`}
                 >
-                  {checkingGoogle ? <Loader2 size={13} className="animate-spin" /> : <Chrome size={13} />}
-                  {t('settings.connectGoogle')}
+                  {checkingConnection || connectingX ? <Loader2 size={13} className="animate-spin" /> : <LogIn size={13} />}
+                  {t('settings.connectX')}
                 </button>
-                <p className="text-[10px] text-text-muted mt-1">{t('settings.connectGoogleDesc')}</p>
+                <p className="text-[10px] text-text-muted mt-1">{t('settings.connectXDesc')}</p>
               </div>
             </div>
             <div className="flex items-center gap-2 pt-2">
@@ -336,21 +344,21 @@ C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`}</pre>
                   </tr>
                 ))}
                 <tr className="border-b border-border last:border-0">
-                  <td className="py-2.5 pr-4 text-xs font-medium text-text w-52">{t('settings.connectGoogle')}</td>
+                  <td className="py-2.5 pr-4 text-xs font-medium text-text w-52">{t('settings.connectX')}</td>
                   <td className="py-2.5">
                     <button
-                      onClick={handleConnectGoogle}
-                      disabled={checkingGoogle}
+                      onClick={handleConnectX}
+                      disabled={checkingConnection || connectingX}
                       className={`inline-flex items-center gap-2 px-2.5 py-1 text-xs font-medium rounded-md transition-colors disabled:opacity-50 ${
-                        googleConnected === true
+                        xConnected === true
                           ? 'text-green-700 dark:text-green-400 border-2 border-green-500 hover:bg-green-50 dark:hover:bg-green-950/30'
-                          : googleConnected === false
+                          : xConnected === false
                             ? 'text-red-700 dark:text-red-400 border-2 border-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
                             : 'text-text-secondary border border-border hover:bg-bg-hover'
                       }`}
                     >
-                      {checkingGoogle ? <Loader2 size={12} className="animate-spin" /> : <Chrome size={12} />}
-                      {t('settings.connectGoogle')}
+                      {checkingConnection || connectingX ? <Loader2 size={12} className="animate-spin" /> : <LogIn size={12} />}
+                      {t('settings.connectX')}
                     </button>
                   </td>
                 </tr>

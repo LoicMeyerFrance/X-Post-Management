@@ -10,6 +10,7 @@ import { DateTimePicker } from '@/components/DateTimePicker'
 import { useConfirm } from '@/components/ConfirmModal'
 import { useComposer } from '@/contexts/ComposerContext'
 import { useSettings } from '@/contexts/SettingsContext'
+import { toastResult, outcomeOf } from '@/lib/utils'
 import * as api from '@/lib/api'
 import type { Post } from '@/lib/api'
 
@@ -124,22 +125,15 @@ export function Composer() {
 
       if (status === 'posting') {
         toast.info(t('composer.publishing'))
-        const postResult = await api.postNow(result.id)
-        if (postResult.success) {
-          toast.success(t('composer.published'))
-          resetForm()
-        } else {
-          toast.error(`${t('common.errorPrefix')} : ${postResult.error || t('common.unknownError')}`)
-        }
+        await api.postNow(result.id)
+        // Queued: free the editor now and report the outcome when it lands.
+        resetForm()
+        watchOutcome(result.id, 'posted', t('composer.published'))
       } else if (status === 'scheduled') {
         toast.info(t('composer.scheduling'))
-        const scheduleResult = await api.scheduleNow(result.id)
-        if (scheduleResult.success) {
-          toast.success(t('composer.scheduledOnX'))
-          resetForm()
-        } else {
-          toast.error(`${t('common.errorPrefix')} : ${scheduleResult.error || t('common.unknownError')}`)
-        }
+        await api.scheduleNow(result.id)
+        resetForm()
+        watchOutcome(result.id, 'scheduled_on_x', t('composer.scheduledOnX'))
       } else {
         toast.success(t('composer.draftSaved'))
         resetForm()
@@ -152,14 +146,20 @@ export function Composer() {
     }
   }
 
+  // Keep the latest submit in a ref so the shortcut listener is attached once
+  // instead of being torn down and re-added on every keystroke.
+  const submitRef = useRef(submit)
+  submitRef.current = submit
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); submit('posting') }
-      else if (e.ctrlKey && e.key === 's') { e.preventDefault(); submit('draft') }
+      if (!(e.ctrlKey || e.metaKey) || loading) return
+      if (e.key === 'Enter') { e.preventDefault(); submitRef.current('posting') }
+      else if (e.key === 's') { e.preventDefault(); submitRef.current('draft') }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  })
+  }, [loading])
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
@@ -172,13 +172,24 @@ export function Composer() {
     }
   }
 
+  /** Follow a queued post and toast the real outcome when the worker is done. */
+  const watchOutcome = useCallback(
+    (id: number, expected: Post['status'], successMessage: string) => {
+      api.waitForPost(id)
+        .then(post => toastResult(outcomeOf(post, expected), successMessage, t))
+        .catch(() => toast.error(t('common.serverError')))
+        .finally(() => loadDrafts())
+    },
+    [t, loadDrafts],
+  )
+
   const handlePostAction = async (action: string, id: number) => {
     try {
       if (action === 'post-now') {
         if (!await confirm({ message: t('composer.confirmPublish') })) return
         toast.info(t('composer.publishing'))
-        const r = await api.postNow(id)
-        r.success ? toast.success(t('post.published')) : toast.error(`${t('common.errorPrefix')} : ${r.error || t('common.unknownError')}`)
+        await api.postNow(id)
+        watchOutcome(id, 'posted', t('post.published'))
       } else if (action === 'duplicate') {
         await api.duplicatePost(id)
         toast.success(t('composer.duplicated'))

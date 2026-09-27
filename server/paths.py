@@ -7,10 +7,15 @@ import sys
 def get_base_dir():
     """Persistent data directory (data, logs, .env).
 
+    Set XPM_HOME to keep the data somewhere else (also used by the test suite).
     In a PyInstaller bundle on Windows, this is the folder containing the .exe.
     In a macOS .app bundle, this is the folder containing the .app.
     In development, this is the project root (one level up from server/).
     """
+    override = os.environ.get('XPM_HOME', '').strip()
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+
     if getattr(sys, 'frozen', False):
         if sys.platform == 'darwin':
             # .app/Contents/MacOS/exe → go up to the folder containing the .app

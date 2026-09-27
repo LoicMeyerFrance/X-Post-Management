@@ -8,7 +8,7 @@ import { useConfirm } from '@/components/ConfirmModal'
 import { useSettings } from '@/contexts/SettingsContext'
 import * as api from '@/lib/api'
 import type { Post } from '@/lib/api'
-import { cn } from '@/lib/utils'
+import { cn, toastResult, outcomeOf } from '@/lib/utils'
 
 type Tab = 'posted' | 'error'
 
@@ -54,8 +54,11 @@ export function History() {
     try {
       if (action === 'retry') {
         toast.info(t('history.retrying'))
-        const r = await api.retryPost(id)
-        r.success ? toast.success(t('post.published')) : toast.error(`${t('common.errorPrefix')} : ${r.error || t('common.unknownError')}`)
+        await api.retryPost(id)
+        api.waitForPost(id)
+          .then(post => toastResult(outcomeOf(post, 'posted'), t('post.published'), t))
+          .catch(() => toast.error(t('common.serverError')))
+          .finally(() => load(tab))
       } else if (action === 'duplicate') {
         await api.duplicatePost(id)
         toast.success(t('composer.duplicated'))

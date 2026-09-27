@@ -1,4 +1,4 @@
-import { Pencil, Play, Copy, Trash2, RotateCcw, ExternalLink, X } from 'lucide-react'
+import { Pencil, Play, Copy, Trash2, RotateCcw, ExternalLink } from 'lucide-react'
 import type { Post } from '@/lib/api'
 import { uploadUrl } from '@/lib/api'
 import { formatDate, timeFromNow, cn } from '@/lib/utils'

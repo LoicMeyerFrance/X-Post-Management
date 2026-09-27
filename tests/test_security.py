@@ -1,0 +1,233 @@
+"""Security checks for the local API.
+
+The app serves its interface from a web server on 127.0.0.1 with no
+authentication, so any page the user visits can also reach it. These tests pin
+down the guards that make that safe, plus the handling of the X password. They
+run against Flask's test client in a throwaway directory - no browser, no
+network, no X account.
+
+    python tests/test_security.py
+"""
+
+import io
+import os
+import re
+import shutil
+import sys
+import tempfile
+
+TEST_HOME = tempfile.mkdtemp(prefix='xpm-sec-')
+os.environ['XPM_HOME'] = TEST_HOME
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'server'))
+
+import app as appmod        # noqa: E402
+import config               # noqa: E402
+import database             # noqa: E402
+
+LOCAL = {'Host': '127.0.0.1:5000', 'Origin': 'http://127.0.0.1:5000'}
+PNG = b'\x89PNG\r\n\x1a\n' + b'C' * 128
+
+passed, failed = [], []
+
+
+def check(name, condition, detail=''):
+    (passed if condition else failed).append(name)
+    print(('  ok  ' if condition else 'FAIL  ') + name + (f'   [{detail}]' if not condition else ''))
+
+
+def section(title):
+    print(f'\n--- {title} ---')
+
+
+def read_source():
+    files = {}
+    for name in os.listdir(os.path.join(ROOT, 'server')):
+        if name.endswith('.py'):
+            path = os.path.join(ROOT, 'server', name)
+            files[name] = io.open(path, encoding='utf-8').read()
+    return files
+
+
+def strip_comments(text):
+    """Drop # comments so a comment about a flag is not mistaken for the flag."""
+    return '\n'.join(re.sub(r'#.*$', '', line) for line in text.splitlines())
+
+
+def test_cross_origin(client):
+    section('a web page must not be able to drive the app')
+
+    probes = [
+        ('a foreign Host header (DNS rebinding)', {'Host': 'evil.com'}),
+        ('a cross-origin Origin (CSRF)', {**LOCAL, 'Origin': 'https://evil.com'}),
+        ('Sec-Fetch-Site: cross-site', {**LOCAL, 'Sec-Fetch-Site': 'cross-site'}),
+        ('Sec-Fetch-Site: same-site (other port)', {**LOCAL, 'Sec-Fetch-Site': 'same-site'}),
+        ('a cross-origin Referer', {**LOCAL, 'Referer': 'https://evil.com/page'}),
+    ]
+    for label, headers in probes:
+        r = client.post('/api/posts', headers=headers, data={'text': 'x'})
+        check(f'blocked: {label}', r.status_code == 403, r.status_code)
+
+    # Reading is guarded too: the logs and the settings are worth stealing.
+    for path in ('/api/logs', '/api/settings/env', '/api/posts'):
+        r = client.get(path, headers={'Host': 'evil.com'})
+        check(f'blocked: reading {path} from a foreign Host', r.status_code == 403, r.status_code)
+
+    r = client.get('/api/health', headers=LOCAL)
+    check('the app\'s own frontend is allowed', r.status_code == 200, r.status_code)
+
+
+def test_headers(client):
+    section('response headers')
+
+    r = client.get('/api/health', headers=LOCAL)
+    check('no wildcard CORS header', 'Access-Control-Allow-Origin' not in r.headers,
+          r.headers.get('Access-Control-Allow-Origin'))
+    for header, expected in (('X-Content-Type-Options', 'nosniff'),
+                             ('X-Frame-Options', 'DENY'),
+                             ('Referrer-Policy', 'no-referrer')):
+        check(f'{header}: {expected}', r.headers.get(header) == expected, r.headers.get(header))
+
+    csp = r.headers.get('Content-Security-Policy', '')
+    for directive in ("default-src 'self'", "script-src 'self'", "object-src 'none'",
+                      "frame-ancestors 'none'", "base-uri 'none'", "connect-src 'self'"):
+        check(f'CSP contains {directive}', directive in csp, csp[:90])
+
+    check('API replies are not cached', r.headers.get('Cache-Control') == 'no-store',
+          r.headers.get('Cache-Control'))
+
+
+def test_secrets(client):
+    section('the X password stays on the machine')
+
+    settings = {'X_USERNAME': 'someone', 'X_PASSWORD': 'sup3r s3cret "pw"', 'HEADLESS': 'true',
+                'CHECK_INTERVAL_SECONDS': '15', 'MAX_RETRIES': '1',
+                'CHROME_PATH': '', 'CHROME_PROFILE_DIR': ''}
+    client.post('/api/settings/env', headers=LOCAL, json=settings)
+    secret = settings['X_PASSWORD']
+
+    body = client.get('/api/settings/env', headers=LOCAL).get_json()
+    check('the settings endpoint masks it', body['X_PASSWORD'] == config.MASK, body['X_PASSWORD'])
+    check('it is still stored correctly', config.read_env_file()['X_PASSWORD'] == secret)
+
+    for path in ('/api/settings/connection-status', '/api/profile', '/api/logs'):
+        raw = client.get(path, headers=LOCAL).data.decode('utf-8', 'replace')
+        check(f'{path} does not leak it', secret not in raw)
+
+    # What matters is that no file content escapes, whatever the status code.
+    for path in ('/.env', '/../.env', '/%2e%2e/.env', '/ui/../.env',
+                 '/assets/../../../.env', '/data/posts.db'):
+        raw = client.get(path, headers=LOCAL).data
+        check(f'{path} serves no file content',
+              b'X_PASSWORD' not in raw and b'X_USERNAME' not in raw and secret.encode() not in raw)
+
+    check('a missing file is a real 404, not the SPA shell',
+          client.get('/.env', headers=LOCAL).status_code == 404,
+          client.get('/.env', headers=LOCAL).status_code)
+    check('a client-side route still gets the SPA shell',
+          client.get('/schedule', headers=LOCAL).status_code == 200,
+          client.get('/schedule', headers=LOCAL).status_code)
+
+
+def test_uploads(client):
+    section('uploads')
+
+    r = client.get('/uploads/../posts.db', headers=LOCAL)
+    check('path traversal is refused', r.status_code == 404, r.status_code)
+
+    r = client.post('/api/posts', headers=LOCAL, data={
+        'text': 'x', 'status': 'draft',
+        'image': (io.BytesIO(b'<?php echo 1; ?>' + b'A' * 40), 'shell.png'),
+    }, content_type='multipart/form-data')
+    check('content is checked, not just the extension', r.status_code == 400, r.status_code)
+
+    r = client.post('/api/posts', headers=LOCAL, data={
+        'status': 'draft', 'image': (io.BytesIO(PNG), 'x.svg'),
+    }, content_type='multipart/form-data')
+    check('svg is not an accepted upload type', r.status_code == 400, r.status_code)
+
+    huge = b'\x89PNG\r\n\x1a\n' + b'A' * (9 * 1024 * 1024)
+    r = client.post('/api/posts', headers=LOCAL, data={
+        'status': 'draft', 'image': (io.BytesIO(huge), 'big.png'),
+    }, content_type='multipart/form-data')
+    check('an oversized body is refused', r.status_code in (400, 413), r.status_code)
+
+
+def test_input_validation(client):
+    section('input validation')
+
+    r = client.get("/api/posts?status=' OR 1=1--", headers=LOCAL)
+    check('a SQL-shaped status is refused', r.status_code == 400, r.status_code)
+
+    r = client.post('/api/settings/env', headers=LOCAL,
+                    json={'X_USERNAME': 'a\nX_PASSWORD=stolen', 'X_PASSWORD': 'p',
+                          'HEADLESS': 'true', 'CHECK_INTERVAL_SECONDS': '15',
+                          'MAX_RETRIES': '1', 'CHROME_PATH': '', 'CHROME_PROFILE_DIR': ''})
+    check('a newline cannot be injected into .env', r.status_code == 400, r.status_code)
+
+    r = client.post('/api/settings/preferences', headers=LOCAL, json={'../../evil': 'x'})
+    check('unknown preference keys are refused', r.status_code == 400, r.status_code)
+
+    r = client.put('/api/posts/1', headers=LOCAL, json={'status': 'posted'})
+    check('a client cannot force the posted status',
+          r.status_code in (400, 404), r.status_code)
+
+
+def test_source():
+    section('settings that must not come back')
+
+    files = read_source()
+    code = strip_comments('\n'.join(files.values()))
+
+    check('the browser sandbox is not disabled', '--no-sandbox' not in code)
+    check('TLS errors are not ignored',
+          'ignore_https_errors=True' not in code and "'ignore_https_errors': True" not in code)
+    check('Flask debug mode is off', 'debug=True' not in code)
+    # Assert the value passed to app.run(), not a particular spelling: the host
+    # lives in a variable now, and '0.0.0.0' also shows up in a version check.
+    run_call = re.search(r'app\.run\((.*?)\)', files['app.py'], re.S)
+    host_assign = re.search(r"^\s*host = '([\d.]+)'", files['app.py'], re.M)
+    check('the server binds loopback only',
+          bool(host_assign) and host_assign.group(1) == '127.0.0.1'
+          and bool(run_call) and 'host=host' in run_call.group(1),
+          host_assign.group(1) if host_assign else 'no host assignment')
+    check('nothing binds to all interfaces',
+          not re.search(r"(host\s*=\s*|run\()['\"]0\.0\.0\.0", code))
+    check('a request size limit is set', 'MAX_CONTENT_LENGTH' in files['app.py'])
+    check('no wildcard CORS header is emitted',
+          "Access-Control-Allow-Origin'] = '*'" not in code)
+    check('the user agent is not spoofed', '_USER_AGENT' not in code)
+
+    # Every SQL string that interpolates must only interpolate our own names.
+    interpolated = re.findall(r"execute(?:script)?\(f['\"](.*?)['\"]", files['database.py'])
+    placeholders = {p for sql in interpolated for p in re.findall(r'\{(\w+)\}', sql)}
+    check('SQL interpolates only internal identifiers',
+          placeholders <= {'set_clause', 'placeholders', 'table', '_POSTS_SCHEMA'},
+          placeholders)
+    check('the table name is allow-listed', '_OUR_TABLES' in files['database.py'])
+
+
+def main():
+    database.init_db()
+    client = appmod.app.test_client()
+
+    test_cross_origin(client)
+    test_headers(client)
+    test_secrets(client)
+    test_uploads(client)
+    test_input_validation(client)
+    test_source()
+
+    print(f'\n{len(passed)} passed, {len(failed)} failed')
+    if failed:
+        print('failing: ' + ', '.join(failed))
+    return 1 if failed else 0
+
+
+if __name__ == '__main__':
+    try:
+        code = main()
+    finally:
+        shutil.rmtree(TEST_HOME, ignore_errors=True)
+    sys.exit(code)
