@@ -47,8 +47,8 @@ L'application est composee de :
 | `GET` | `/api/posts/:id` | Detail d'un post |
 | `PUT` | `/api/posts/:id` | Modifier un post |
 | `DELETE` | `/api/posts/:id` | Supprimer un post |
-| `POST` | `/api/posts/:id/post-now` | Publier immediatement |
-| `POST` | `/api/posts/:id/schedule-now` | Programmer sur X nativement |
+| `POST` | `/api/posts/:id/post-now` | Met en file et repond `202` ; suivre le statut du post |
+| `POST` | `/api/posts/:id/schedule-now` | Met en file et repond `202` ; suivre le statut du post |
 | `POST` | `/api/posts/:id/retry` | Retenter un post en erreur |
 | `POST` | `/api/posts/:id/duplicate` | Dupliquer un post |
 | `POST` | `/api/posts/:id/delete-from-x` | Supprimer un tweet publie de X |
@@ -69,15 +69,16 @@ L'application est composee de :
 | `GET` | `/api/settings/env` | Lire la configuration .env |
 | `POST` | `/api/settings/env` | Sauvegarder la configuration .env |
 | `GET` | `/api/settings/test-connection` | Tester la connexion a X |
-| `POST` | `/api/settings/connect-google` | Ouvrir Chrome pour login Google |
-| `GET` | `/api/settings/check-google` | Verifier si Google est connecte |
+| `POST` | `/api/settings/connect-x` | Se connecter a X dans une fenetre visible |
+| `GET` | `/api/settings/connection-status` | Etat de la derniere connexion (sans navigateur) |
 | `GET` | `/api/settings/preferences` | Lire les preferences UI (langue, theme) |
 | `POST` | `/api/settings/preferences` | Sauvegarder les preferences UI |
 
 ### Autres
 | Methode | Route | Description |
 |---|---|---|
-| `GET` | `/api/logs` | 200 dernieres lignes de logs |
+| `GET` | `/api/logs` | 200 dernieres lignes de logs (`?fingerprint=` pour eviter un renvoi inutile) |
+| `GET` | `/api/health` | Etat du serveur + version de l'application |
 | `GET` | `/api/detect-chrome` | Auto-detection Chrome sur le systeme |
 | `GET` | `/uploads/:filename` | Fichiers uploades (images) |
 

@@ -11,7 +11,6 @@ Desktop application to manage and schedule your X (Twitter) posts locally and se
 - Delete tweets directly from the app
 - Calendar view of your posts
 - **My Profile** page: followers/following stats, bio, growth chart, follower variations
-- Google account connection for login
 - Auto-detect Chrome installation
 - Persistent preferences (language, theme) across sessions
 - Bilingual interface (English / French)
@@ -26,13 +25,19 @@ Download the latest `X Post Management.exe` from the releases.
 On first launch, a **Setup Wizard** guides you through 4 steps:
 
 1. **Welcome** — Choose your language (EN/FR) and click **Get started**
-2. **Credentials** — Enter your X username (without @) and password. These are saved locally in a `.env` file — nothing is sent to any server besides X itself.
-3. **Google Connection** — Connect with Google (same email as your X account). A browser window opens for authentication. The wizard waits until the connection is confirmed.
-4. **Import Profile** — Click **Import Profile** to fetch your profile picture, display name, bio and follower counts from X.
+2. **Credentials** — Enter your X username (without @) and password. These are saved
+   locally in a `.env` file — nothing is sent to any server besides X itself.
+3. **Sign in** — Click **Connect to X**. A browser window opens and the app signs in
+   with the credentials you just saved. If X asks for a code or a verification,
+   answer it in that window and the sign-in finishes on its own. The session is
+   then kept, so your credentials are not typed again.
+4. **Import Profile** — Click **Import Profile** to fetch your profile picture,
+   display name, bio and follower counts from X.
 
 Once complete, you're ready to compose, schedule and manage your posts.
 
-> **Tip:** Leave Chrome profile and Chrome path empty (default) to use the built-in Chromium browser.
+> **Tip:** Leave Chrome profile and Chrome path empty (default) to use the browser
+> bundled with the app.
 
 ## Configuration Options
 
@@ -56,10 +61,18 @@ later. Quotes, spaces and backslashes in your password are preserved exactly.
 
 ## Troubleshooting
 
-- **Connection failed**: Test connection in Settings. If X requires verification, set `HEADLESS=false` and log in manually.
-- **Post failed**: Make sure the image is under 5 MB.
+- **Sign-in failed**: use **Settings → Connect to X**. Set the browser to **Visible**
+  so you can answer whatever X is asking for; the session is saved afterwards.
+- **"X has temporarily limited sign-in"**: X throttles repeated attempts. Wait before
+  trying again — the app will not retry on its own, because retrying makes it worse.
+- **Blank white window**: the app needs the
+  [Edge WebView2 runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
+  Without it the app now opens in your browser instead and says so in the log.
+- **Post failed**: make sure the image is under 5 MB.
+- **"X does not offer the requested minute"**: X's schedule dialog only lists certain
+  minutes. Pick a time it offers — the app refuses to schedule at a time you did not
+  choose rather than rounding silently.
 - **Videos not supported**: X blocks automated video uploads. Only images are accepted.
-- **Google login**: Use the "Connect to Google" button in Settings to authenticate with your Google account (same email as your X account).
 
 ## Security
 
@@ -95,7 +108,7 @@ data/
   profile_info.json   - Cached profile information
   profile_picture.jpg - Profile picture
   preferences.json    - UI preferences (language, theme)
-  state.json          - Saved X/Google session (cookies)
+  session.json        - Whether the last sign-in succeeded (no credentials)
   chrome_profile/     - Browser profile, when CHROME_PROFILE_DIR is empty
   uploads/            - Uploaded images
 logs/
@@ -117,10 +130,13 @@ cd ui && npm install && npm run build && cd ..
 python server/app.py
 ```
 
-**Tests and checks:**
+**Tests and checks** — none of these need a browser, a network or an X account;
+they run in a throwaway directory and never touch your real `data/` or `.env`:
 ```bash
-python tests/test_api.py      # API, validation and security checks (no browser, no account)
-cd ui && npm run lint         # frontend lint
+python tests/test_api.py        # API, validation, queued publishing, recovery
+python tests/test_schedule.py   # date mapping onto X's schedule dialog
+python tests/test_security.py   # cross-origin guards, secrets, uploads
+cd ui && npm run lint           # frontend lint
 ```
 
 **Build executable:**
@@ -144,6 +160,12 @@ pyinstaller "X Post Manager.spec" --distpath dist --clean
 - **Frontend**: React, TypeScript, Vite, TailwindCSS, Recharts
 - **Desktop**: pywebview (EdgeChromium) / PyInstaller
 - **Scheduling**: APScheduler
+
+## Versioning
+
+The version lives in a single `VERSION` file at the repository root. The interface,
+`/api/health` and the startup log all read it, and the release tag should match it.
+Bump that one file, tag `vX.Y.Z`, and the build workflow publishes the release.
 
 ## License
 
