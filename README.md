@@ -4,8 +4,7 @@ Desktop application to manage and schedule your X (Twitter) posts locally and se
 
 > ### ✅ Up to date for 2026
 >
-> X rebuilt its sign-in and scheduling screens during 2026. **Version 1.1.0 works
-> against the current site** — earlier versions can no longer sign in, and the
+> X rebuilt its sign-in and scheduling screens during 2026.
 > Windows build no longer opens a blank window.
 >
 > [**Download the latest release →**](https://github.com/LoicMeyerFrance/X-Post-Management/releases/latest)
