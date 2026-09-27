@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Wifi, RefreshCw, Loader2, HelpCircle, X, Save, Pencil, AlertCircle, Trash2, BadgeCheck, Search, LogIn, Monitor, EyeOff } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
 import { useConfirm } from '@/components/ConfirmModal'
 import { useSettings } from '@/contexts/SettingsContext'
+import { useNavigation } from '@/contexts/NavigationContext'
 import * as api from '@/lib/api'
 
 export function Settings() {
@@ -117,6 +118,21 @@ export function Settings() {
 
   const [connectingX, setConnectingX] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
+
+  // Arriving from the dashboard hint: bring the browser switch into view and
+  // flash it, so the setting being talked about is unmistakable.
+  const { pendingSection, clearPendingSection } = useNavigation()
+  const browserRef = useRef<HTMLDivElement>(null)
+  const [highlightBrowser, setHighlightBrowser] = useState(false)
+
+  useEffect(() => {
+    if (pendingSection !== 'browser-mode') return
+    clearPendingSection()
+    browserRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setHighlightBrowser(true)
+    const timer = setTimeout(() => setHighlightBrowser(false), 2200)
+    return () => clearTimeout(timer)
+  }, [pendingSection, clearPendingSection])
 
   const handleConnectX = async () => {
     setConnectingX(true)
@@ -394,7 +410,13 @@ C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`}</pre>
       </div>
 
       {/* Browser */}
-      <div className="px-6 py-6 border-b border-border">
+      <div
+        id="browser-mode"
+        ref={browserRef}
+        className={`px-6 py-6 border-b border-border transition-colors duration-500 ${
+          highlightBrowser ? 'bg-accent-light dark:bg-accent/15' : ''
+        }`}
+      >
         <h3 className="text-sm font-semibold text-text mb-4">{t('settings.browserSection')}</h3>
         <div className="grid grid-cols-2 gap-3">
           {([

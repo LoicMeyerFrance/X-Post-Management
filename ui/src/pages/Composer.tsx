@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { ImagePlus, X, Send, Save, RotateCcw } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
+import { BrowserModeHint } from '@/components/BrowserModeHint'
 import { PostItem } from '@/components/PostItem'
 import { EditModal } from '@/components/EditModal'
 import { EmojiPicker } from '@/components/EmojiPicker'
@@ -216,6 +217,8 @@ export function Composer() {
   return (
     <div>
       <PageHeader title={t('composer.title')} description={t('composer.desc')} />
+
+      <BrowserModeHint />
 
       <div className="flex divide-x divide-border">
         {/* Editor column */}

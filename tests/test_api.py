@@ -381,6 +381,31 @@ def test_native_window_fallback():
     check('detection recovers afterwards', appmod.native_window_usable()[0])
 
 
+
+def test_browser_mode_hint(client):
+    """The dashboard hint about running the browser invisibly."""
+    section('browser mode hint')
+
+    r = client.post('/api/settings/preferences', headers=LOCAL, json={'browserHintSeen': 'true'})
+    check('its dismissal can be stored', r.status_code == 200, r.status_code)
+    check('and comes back on reload',
+          client.get('/api/settings/preferences', headers=LOCAL)
+          .get_json().get('browserHintSeen') == 'true')
+
+    # The hint's one-click action just saves HEADLESS=true.
+    base = {'X_USERNAME': 'someone', 'X_PASSWORD': config.MASK, 'HEADLESS': 'false',
+            'CHECK_INTERVAL_SECONDS': '15', 'MAX_RETRIES': '1',
+            'CHROME_PATH': '', 'CHROME_PROFILE_DIR': ''}
+    client.post('/api/settings/env', headers=LOCAL, json=base)
+    check('the visible mode is readable', 
+          client.get('/api/settings/env', headers=LOCAL).get_json()['HEADLESS'] == 'false')
+
+    client.post('/api/settings/env', headers=LOCAL, json={**base, 'HEADLESS': 'true'})
+    check('switching to invisible sticks',
+          client.get('/api/settings/env', headers=LOCAL).get_json()['HEADLESS'] == 'true')
+    check('the password was not lost in the process', config.get_password() != '')
+
+
 def main():
     database.init_db()
     client = appmod.app.test_client()
@@ -392,6 +417,7 @@ def main():
     test_publishing_is_queued(client)
     test_interrupted_posts_are_recovered(client)
     test_native_window_fallback()
+    test_browser_mode_hint(client)
     test_env_round_trip()
 
     print(f'\n{len(passed)} passed, {len(failed)} failed')

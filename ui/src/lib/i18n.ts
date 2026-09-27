@@ -1,6 +1,14 @@
 export type Locale = 'fr' | 'en'
 
 const translations = {
+  // Browser mode hint
+  'hint.browserInvisibleTitle': { fr: 'Le navigateur travaille hors de votre vue', en: 'The browser works out of sight' },
+  'hint.browserInvisibleBody': { fr: 'Vos posts partent sans qu\'aucune fenêtre ne s\'ouvre. Si X demande un jour un code, passez le navigateur en mode visible depuis les Paramètres, le temps de répondre.', en: 'Your posts go out without any window opening. If X ever asks for a code, switch the browser to visible mode in Settings just long enough to answer.' },
+  'hint.browserVisibleTitle': { fr: 'Le navigateur s\'ouvre à l\'écran', en: 'The browser opens on screen' },
+  'hint.browserVisibleBody': { fr: 'Une fenêtre Chrome apparaît à chaque publication. Vous pouvez la rendre invisible : l\'app travaillera en arrière-plan sans vous déranger.', en: 'A Chrome window appears every time you post. You can make it invisible so the app works in the background without interrupting you.' },
+  'hint.openSetting': { fr: 'Changer ce réglage', en: 'Change this setting' },
+  'hint.dismiss': { fr: 'Ne plus afficher', en: 'Dismiss' },
+
   // Sidebar
   'nav.composer': { fr: 'Composer', en: 'Compose' },
   'nav.schedule': { fr: 'Planification', en: 'Schedule' },

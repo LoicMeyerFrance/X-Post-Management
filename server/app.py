@@ -554,7 +554,7 @@ def api_duplicate_post(post_id):
 
 # Every UI preference the frontend persists. Keeping this closed stops the
 # preferences file from growing without bound.
-PREFERENCE_KEYS = {'locale', 'theme', 'setupComplete'}
+PREFERENCE_KEYS = {'locale', 'theme', 'setupComplete', 'browserHintSeen'}
 
 
 @app.route('/api/settings/preferences', methods=['GET'])

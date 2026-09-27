@@ -2,6 +2,7 @@ import { useState, useEffect, lazy, Suspense } from 'react'
 import { Toaster } from 'sonner'
 import { SettingsProvider, useSettings } from './contexts/SettingsContext'
 import { ComposerProvider } from './contexts/ComposerContext'
+import { NavigationProvider, type Page } from './contexts/NavigationContext'
 import { ConfirmProvider } from './components/ConfirmModal'
 import { SetupWizard } from './components/SetupWizard'
 import { Sidebar } from './components/Sidebar'
@@ -20,8 +21,6 @@ import * as api from './lib/api'
 const Profile = lazy(() => import('./pages/Profile').then(m => ({ default: m.Profile })))
 
 const BMC_URL = 'https://buymeacoffee.com/loicmeyer'
-
-type Page = 'composer' | 'schedule' | 'calendar' | 'history' | 'logs' | 'settings' | 'profile' | 'about'
 
 function PageLoader() {
   return (
@@ -94,6 +93,7 @@ function AppContent() {
   }
 
   return (
+    <NavigationProvider onNavigate={handleNavigate}>
     <div className="flex h-screen overflow-hidden bg-bg">
       {/* Setup wizard */}
       {setupComplete === false && <SetupWizard onComplete={handleSetupComplete} />}
@@ -126,6 +126,7 @@ function AppContent() {
         }}
       />
     </div>
+    </NavigationProvider>
   )
 }
 
