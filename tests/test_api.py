@@ -406,6 +406,65 @@ def test_browser_mode_hint(client):
     check('the password was not lost in the process', config.get_password() != '')
 
 
+
+def test_check_posts_on_x(client):
+    """Finding posts the app still lists but X no longer has.
+
+    A fake stands in for the browser: nothing is opened and nothing is deleted
+    on X.
+    """
+    section('reconciling with X')
+
+    import bot
+    import database
+
+    def make_posted(text, url):
+        pid = client.post('/api/posts', headers=LOCAL,
+                          data={'text': text, 'status': 'draft'}).get_json()['id']
+        database.update_post(pid, status='posted', tweet_url=url)
+        return pid
+
+    alive = make_posted('still up', 'https://x.com/u/status/111')
+    gone = make_posted('deleted on X', 'https://x.com/u/status/222')
+    murky = make_posted('could not tell', 'https://x.com/u/status/333')
+
+    original = bot.check_tweets
+    bot.check_tweets = lambda urls: {'success': True, 'states': {
+        'https://x.com/u/status/111': 'present',
+        'https://x.com/u/status/222': 'missing',
+        'https://x.com/u/status/333': 'unknown',
+    }}
+    try:
+        r = client.post('/api/posts/check-on-x', headers=LOCAL)
+        check('the check answers 200', r.status_code == 200, r.status_code)
+        body = r.get_json()
+
+        check('all three were looked at', body['checked'] == 3, body['checked'])
+        check('only the missing one is reported',
+              [m['id'] for m in body['missing']] == [gone], body['missing'])
+        check('the inconclusive one is counted, not proposed',
+              body['unknown'] == 1, body['unknown'])
+
+        # The endpoint reports; it must not delete on its own.
+        for pid in (alive, gone, murky):
+            check(f'post {pid} still exists after the check',
+                  client.get(f'/api/posts/{pid}', headers=LOCAL).status_code == 200)
+
+        # A browser failure must not be read as "everything is gone".
+        bot.check_tweets = lambda urls: {'success': False, 'error': 'browser died'}
+        body = client.post('/api/posts/check-on-x', headers=LOCAL).get_json()
+        check('a failed check reports the error instead of a list',
+              body.get('error') == 'browser died' and 'missing' not in body, body)
+    finally:
+        bot.check_tweets = original
+        for pid in (alive, gone, murky):
+            client.delete(f'/api/posts/{pid}', headers=LOCAL)
+
+    r = client.post('/api/posts/check-on-x', headers=LOCAL)
+    check('with nothing published, it says so without opening a browser',
+          r.get_json()['checked'] == 0, r.get_json())
+
+
 def main():
     database.init_db()
     client = appmod.app.test_client()
@@ -418,6 +477,7 @@ def main():
     test_interrupted_posts_are_recovered(client)
     test_native_window_fallback()
     test_browser_mode_hint(client)
+    test_check_posts_on_x(client)
     test_env_round_trip()
 
     print(f'\n{len(passed)} passed, {len(failed)} failed')

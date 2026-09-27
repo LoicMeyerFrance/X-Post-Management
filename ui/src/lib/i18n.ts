@@ -125,6 +125,15 @@ const translations = {
   'history.noTweetUrl': { fr: 'Pas de lien tweet (post ancien)', en: 'No tweet URL (old post)' },
   'history.viewOnX': { fr: 'Voir sur X', en: 'View on X' },
 
+  'history.checkOnX': { fr: 'Vérifier sur X', en: 'Check on X' },
+  'history.checking': { fr: 'Vérification sur X, cela peut prendre un moment...', en: 'Checking on X, this may take a moment...' },
+  'history.allPresent': { fr: 'Tous vos posts existent toujours sur X', en: 'All your posts still exist on X' },
+  'history.nothingToCheck': { fr: 'Aucun post publié à vérifier', en: 'No published post to check' },
+  'history.missingFound': { fr: 'post(s) n\'existent plus sur X. Les retirer de l\'application ?', en: 'post(s) no longer exist on X. Remove them from the app?' },
+  'history.missingRemoved': { fr: 'Posts retirés de l\'application', en: 'Posts removed from the app' },
+  'history.checkInconclusive': { fr: 'post(s) n\'ont pas pu être vérifiés et ont été laissés tels quels.', en: 'post(s) could not be checked and were left alone.' },
+  'history.checkTruncated': { fr: 'Seuls les 25 posts les plus récents ont été vérifiés.', en: 'Only the 25 most recent posts were checked.' },
+
   // Logs page
   'logs.title': { fr: 'Logs', en: 'Logs' },
   'logs.desc': { fr: 'Journal d\'activité', en: 'Activity log' },

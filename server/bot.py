@@ -1482,6 +1482,61 @@ def _do_connect_x():
         _force_visible = False
 
 
+_DELETED_MARKERS = (
+    'this post was deleted',
+    'ce post a été supprimé',
+    'ce post a ete supprime',
+    'post unavailable',
+    'post indisponible',
+    'page does not exist',
+    "cette page n'existe pas",
+)
+
+
+def _tweet_state(page, tweet_url):
+    """Is this tweet still on X?
+
+    Returns 'present', 'missing' or 'unknown'. Anything we are not sure about is
+    'unknown' on purpose: the caller offers to delete what came back missing, and
+    a wrong guess would throw away a post that is actually still up.
+    """
+    if not tweet_url or '/status/' not in tweet_url:
+        return 'unknown'
+    try:
+        page.goto(tweet_url, wait_until='domcontentloaded', timeout=30000)
+        _human_delay(1.5, 2.5)
+        if _wait(page, 'article[data-testid="tweet"]', timeout=8000):
+            return 'present'
+        body = (page.inner_text('body') or '').lower()
+        if any(marker in body for marker in _DELETED_MARKERS):
+            return 'missing'
+        return 'unknown'
+    except Exception as e:
+        logger.warning(f"Could not check {tweet_url[-24:]}: {e}")
+        return 'unknown'
+
+
+def _do_check_tweets(tweet_urls):
+    """Check a batch of tweets in one browser session."""
+    try:
+        page = _ensure_browser()
+        login_result = _login(page)
+        if not login_result.get('success'):
+            _close_if_visible()
+            return login_result
+
+        states = {}
+        for index, url in enumerate(tweet_urls, 1):
+            states[url] = _tweet_state(page, url)
+            logger.info(f"  [{index}/{len(tweet_urls)}] {states[url]}: {url[-24:]}")
+        _close_if_visible()
+        return {'success': True, 'states': states}
+    except Exception as e:
+        logger.error(f"check_tweets error: {e}")
+        _close_if_visible()
+        return {'success': False, 'error': str(e)}
+
+
 def _do_delete_tweet(tweet_url):
     """Delete a tweet from X. Runs in worker thread."""
     try:
@@ -1837,6 +1892,13 @@ def restart_browser():
 def delete_tweet(tweet_url):
     """Delete a tweet from X. Returns dict with success, error keys."""
     return _run_in_worker(_do_delete_tweet, tweet_url)
+
+
+def check_tweets(tweet_urls):
+    """Check which of these tweets still exist on X. Returns dict with states."""
+    # Roughly four seconds per tweet, plus the sign-in check.
+    timeout = 60 + 15 * len(tweet_urls)
+    return _run_in_worker(_do_check_tweets, list(tweet_urls), timeout=timeout)
 
 
 def delete_scheduled_tweet(post_text):

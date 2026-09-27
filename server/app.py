@@ -466,6 +466,44 @@ def api_schedule_now(post_id):
                           scheduled_at=scheduled_at)
 
 
+# Checking opens each tweet in turn, so the batch is capped to keep the request
+# and the traffic to X reasonable.
+MAX_TWEETS_CHECKED = 25
+
+
+@app.route('/api/posts/check-on-x', methods=['POST'])
+def api_check_on_x():
+    """Find posts the app still lists but X no longer has.
+
+    Nothing is deleted here: the answer is a list the user confirms. A tweet we
+    could not read conclusively is reported as 'unknown' and left alone.
+    """
+    posts = [p for p in database.get_all_posts() if p.get('tweet_url')]
+    if not posts:
+        return jsonify({'checked': 0, 'missing': [], 'unknown': 0, 'truncated': False})
+
+    truncated = len(posts) > MAX_TWEETS_CHECKED
+    posts = posts[:MAX_TWEETS_CHECKED]
+
+    result = bot.check_tweets([p['tweet_url'] for p in posts])
+    if not result.get('success'):
+        return jsonify({'error': result.get('error', 'Check failed')}), 200
+
+    states = result.get('states', {})
+    missing, unknown = [], 0
+    for post in posts:
+        state = states.get(post['tweet_url'], 'unknown')
+        if state == 'missing':
+            missing.append({'id': post['id'], 'text': (post.get('text') or '')[:80]})
+        elif state == 'unknown':
+            unknown += 1
+
+    logger.info("Checked %s post(s) on X: %s missing, %s inconclusive",
+                len(posts), len(missing), unknown)
+    return jsonify({'checked': len(posts), 'missing': missing,
+                    'unknown': unknown, 'truncated': truncated})
+
+
 @app.route('/api/posts/<int:post_id>/delete-from-x', methods=['POST'])
 def api_delete_from_x(post_id):
     post = database.get_post(post_id)

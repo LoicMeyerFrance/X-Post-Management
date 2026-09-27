@@ -140,6 +140,20 @@ export async function duplicatePost(id: number): Promise<Post> {
   return handleResponse<Post>(res)
 }
 
+export interface CheckOnXResult {
+  checked: number
+  missing: { id: number; text: string }[]
+  unknown: number
+  truncated: boolean
+  error?: string
+}
+
+/** Ask X which of the posts we list still exist there. Slow: it opens each one. */
+export async function checkPostsOnX(): Promise<CheckOnXResult> {
+  const res = await fetch(`${BASE}/api/posts/check-on-x`, { method: 'POST' })
+  return handleResponse<CheckOnXResult>(res)
+}
+
 export async function deleteFromX(id: number): Promise<{ success: boolean; error?: string; already_deleted?: boolean }> {
   const res = await fetch(`${BASE}/api/posts/${id}/delete-from-x`, { method: 'POST' })
   return handleResponse<{ success: boolean; error?: string; already_deleted?: boolean }>(res)

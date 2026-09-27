@@ -30,9 +30,8 @@ export function Calendar() {
   const [month, setMonth] = useState(() => new Date().getMonth())
   const [posts, setPosts] = useState<Post[]>([])
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
-  const [selectedPosts, setSelectedPosts] = useState<Post[]>([])
   const [editingPost, setEditingPost] = useState<Post | null>(null)
-  const [previewPost, setPreviewPost] = useState<Post | null>(null)
+  const [previewId, setPreviewId] = useState<number | null>(null)
   const [profile, setProfile] = useState<api.Profile | null>(null)
   const charLimit = profile?.is_verified ? 25000 : 280
 
@@ -43,13 +42,13 @@ export function Calendar() {
   }, [])
 
   useEffect(() => {
-    if (!previewPost) return
+    if (previewId === null) return
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPreviewPost(null)
+      if (e.key === 'Escape') setPreviewId(null)
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [previewPost])
+  }, [previewId])
 
   const load = useCallback(async () => {
     try {
@@ -89,6 +88,12 @@ export function Calendar() {
     }
   })
 
+  // Derived, not stored: snapshots here went stale the moment a post was deleted
+  // or published, leaving a row that only disappeared on page change. The
+  // preview follows the same rule, so it closes on its own when its post goes.
+  const selectedPosts = selectedDate ? postsByDate[selectedDate] || [] : []
+  const previewPost = previewId !== null ? posts.find(p => p.id === previewId) ?? null : null
+
   const firstDay = new Date(year, month, 1).getDay()
   const startOffset = firstDay === 0 ? 6 : firstDay - 1
   const daysInMonth = new Date(year, month + 1, 0).getDate()
@@ -102,9 +107,9 @@ export function Calendar() {
   for (let i = 0; i < remaining; i++) cells.push(null)
 
   const selectDay = (day: number) => {
-    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-    setSelectedDate(dateStr)
-    setSelectedPosts(postsByDate[dateStr] || [])
+    setSelectedDate(
+      `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+    )
   }
 
   const watchPost = (id: number) => {
@@ -271,7 +276,7 @@ export function Calendar() {
               key={p.id}
               post={p}
               actions={actionsForStatus(p.status)}
-              onClick={setPreviewPost}
+              onClick={(p: Post) => setPreviewId(p.id)}
               onEdit={setEditingPost}
               onPostNow={id => handleAction('post-now', id)}
               onRetry={id => handleAction('retry', id)}
@@ -296,14 +301,14 @@ export function Calendar() {
       {previewPost && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => setPreviewPost(null)}
+          onClick={() => setPreviewId(null)}
         >
           <div
             className="relative w-full max-w-[420px] mx-4"
             onClick={e => e.stopPropagation()}
           >
             <button
-              onClick={() => setPreviewPost(null)}
+              onClick={() => setPreviewId(null)}
               className="absolute -top-3 -right-3 z-10 w-8 h-8 bg-bg border border-border rounded-full flex items-center justify-center text-text-muted hover:text-text hover:bg-bg-hover transition-colors shadow-lg"
             >
               <X size={16} />

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X } from 'lucide-react'
+import { X, ScanSearch, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
 import { PostItem } from '@/components/PostItem'
@@ -16,6 +16,7 @@ export function History() {
   const { t } = useSettings()
   const confirm = useConfirm()
   const [tab, setTab] = useState<Tab>('posted')
+  const [checking, setChecking] = useState(false)
   const [posts, setPosts] = useState<Post[]>([])
   const [loading, setLoading] = useState(true)
   const [previewPost, setPreviewPost] = useState<Post | null>(null)
@@ -49,6 +50,43 @@ export function History() {
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
   }, [previewPost])
+
+  /** Find posts X no longer has, and offer to drop them here too. */
+  const checkOnX = async () => {
+    setChecking(true)
+    toast.info(t('history.checking'))
+    try {
+      const result = await api.checkPostsOnX()
+      if (result.error) {
+        toast.error(result.error)
+        return
+      }
+      if (result.checked === 0) {
+        toast.info(t('history.nothingToCheck'))
+        return
+      }
+      if (result.truncated) toast.info(t('history.checkTruncated'))
+      if (result.unknown > 0) {
+        toast.info(`${result.unknown} ${t('history.checkInconclusive')}`)
+      }
+      if (result.missing.length === 0) {
+        toast.success(t('history.allPresent'))
+        return
+      }
+      const ok = await confirm({
+        message: `${result.missing.length} ${t('history.missingFound')}`,
+        danger: true,
+      })
+      if (!ok) return
+      await Promise.all(result.missing.map(m => api.deletePost(m.id).catch(() => {})))
+      toast.success(t('history.missingRemoved'))
+      load(tab)
+    } catch {
+      toast.error(t('common.serverError'))
+    } finally {
+      setChecking(false)
+    }
+  }
 
   const handleAction = async (action: string, id: number) => {
     try {
@@ -87,6 +125,18 @@ export function History() {
   return (
     <div>
       <PageHeader title={t('history.title')} description={t('history.desc')} />
+
+      {/* Reconcile with X: the app cannot know about a tweet deleted there. */}
+      <div className="flex justify-end px-6 pt-4">
+        <button
+          onClick={checkOnX}
+          disabled={checking}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover disabled:opacity-50"
+        >
+          {checking ? <Loader2 size={13} className="animate-spin" /> : <ScanSearch size={13} />}
+          {t('history.checkOnX')}
+        </button>
+      </div>
 
       {/* Tabs */}
       <div className="flex border-b border-border">
