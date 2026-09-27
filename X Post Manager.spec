@@ -14,13 +14,18 @@ datas += collect_data_files('playwright_stealth')
 # ancient MSHTML engine and opens a blank white window.
 binaries = []
 hiddenimports = [
+    'keyring.backends.Windows',
+    'keyring.backends.macOS',
+    'keyring.backends.SecretService',
+    'keyring.backends.chainer',
+    'keyring.backends.fail',
     'webview.platforms.edgechromium',
     'webview.platforms.winforms',
     'webview.platforms.cocoa',
     'webview.platforms.gtk',
     'webview.platforms.qt',
 ]
-for package in ('webview', 'clr_loader', 'pythonnet'):
+for package in ('webview', 'clr_loader', 'pythonnet', 'keyring'):
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
     except Exception:

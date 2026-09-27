@@ -26,6 +26,12 @@ import app as appmod        # noqa: E402
 import config               # noqa: E402
 import database             # noqa: E402
 
+# The credential store is shared with the real installation, and the service name
+# is the only thing that separates them. Point the tests somewhere else before
+# anything can write: a test must never overwrite the user's actual password.
+config.KEYRING_SERVICE = f'X Post Management TEST {os.getpid()}'
+
+
 LOCAL = {'Host': '127.0.0.1:5000', 'Origin': 'http://127.0.0.1:5000'}
 PNG = b'\x89PNG\r\n\x1a\n' + b'C' * 128
 
@@ -109,7 +115,7 @@ def test_secrets(client):
 
     body = client.get('/api/settings/env', headers=LOCAL).get_json()
     check('the settings endpoint masks it', body['X_PASSWORD'] == config.MASK, body['X_PASSWORD'])
-    check('it is still stored correctly', config.read_env_file()['X_PASSWORD'] == secret)
+    check('it is still stored correctly', config.get_password() == secret)
 
     for path in ('/api/settings/connection-status', '/api/profile', '/api/logs'):
         raw = client.get(path, headers=LOCAL).data.decode('utf-8', 'replace')
@@ -214,6 +220,79 @@ def test_source():
     check('the table name is allow-listed', '_OUR_TABLES' in files['database.py'])
 
 
+
+def test_password_storage():
+    """The X password should not sit in a readable file.
+
+    It still has to be recoverable at runtime, so this is about keeping it out of
+    a file that can be copied or screenshotted - not about surviving an attacker
+    who already has the user's session.
+    """
+    section('where the X password is kept')
+
+    # Isolate from the real entry: the service name is what identifies it.
+    real_service = config.KEYRING_SERVICE
+    config.KEYRING_SERVICE = 'X Post Management TEST'
+    env_path = os.path.join(TEST_HOME, 'storage.env')
+    secret = 'p@ss "quoted" \\ and a\nnewline'
+
+    try:
+        store_works = config.set_password(secret, env_path)
+        if not store_works:
+            check('no credential store here, .env fallback is used', True,
+                  'skipped: no backend')
+            config.write_env_file(config.validate({
+                'X_USERNAME': 'someone', 'X_PASSWORD': secret, 'HEADLESS': 'true',
+                'CHECK_INTERVAL_SECONDS': '15', 'MAX_RETRIES': '1',
+                'CHROME_PATH': '', 'CHROME_PROFILE_DIR': ''}), env_path)
+            check('the password is still readable back', config.get_password(env_path) == secret)
+            check('and it is masked for the frontend',
+                  config.public_values(env_path)['X_PASSWORD'] == config.MASK)
+            return
+
+        check('the credential store round-trips it exactly',
+              config.get_password(env_path) == secret, repr(config.get_password(env_path)))
+
+        # Saving settings must not put it back on disk.
+        config.write_env_file(config.validate({
+            'X_USERNAME': 'someone', 'X_PASSWORD': secret, 'HEADLESS': 'true',
+            'CHECK_INTERVAL_SECONDS': '15', 'MAX_RETRIES': '1',
+            'CHROME_PATH': '', 'CHROME_PROFILE_DIR': ''}), env_path)
+
+        on_disk = io.open(env_path, encoding='utf-8').read()
+        check('.env does not contain the password', secret not in on_disk)
+        check('.env does not contain a fragment of it', 'p@ss' not in on_disk)
+        check('but it is still readable through the app',
+              config.get_password(env_path) == secret)
+        check('and still masked for the frontend',
+              config.public_values(env_path)['X_PASSWORD'] == config.MASK)
+
+        # The browser is a child process and would inherit the environment.
+        config.reload_env(env_path)
+        check('the password is not exported to child processes',
+              'X_PASSWORD' not in os.environ, os.environ.get('X_PASSWORD'))
+
+        # An existing install still has it in .env: it must be moved out.
+        legacy = os.path.join(TEST_HOME, 'legacy.env')
+        io.open(legacy, 'w', encoding='utf-8', newline='\n').write(
+            'X_USERNAME="someone"\nX_PASSWORD="old plaintext"\nHEADLESS="true"\n')
+        check('a legacy .env is detected as holding one', config.migrate_password(legacy))
+        moved = io.open(legacy, encoding='utf-8').read()
+        check('the plaintext is gone from the file', 'old plaintext' not in moved, moved[:120])
+        check('the password survived the move',
+              config.get_password(legacy) == 'old plaintext', config.get_password(legacy))
+        check('migrating again is a no-op', not config.migrate_password(legacy))
+        check('the other settings are untouched',
+              config.read_env_file(legacy).get('X_USERNAME') == 'someone')
+    finally:
+        try:
+            config.delete_password()
+        except Exception:
+            pass
+        config.KEYRING_SERVICE = real_service
+        config._keyring_usable = None
+
+
 def main():
     database.init_db()
     client = appmod.app.test_client()
@@ -223,6 +302,7 @@ def main():
     test_secrets(client)
     test_uploads(client)
     test_input_validation(client)
+    test_password_storage()
     test_source()
 
     print(f'\n{len(passed)} passed, {len(failed)} failed')

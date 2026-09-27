@@ -868,6 +868,9 @@ def pick_port(preferred=DEFAULT_PORT, host='127.0.0.1'):
 def main():
     import webbrowser
 
+    if config.migrate_password():
+        logger.info("Your X password is now stored in the OS credential store")
+
     database.init_db()
     stranded = database.recover_interrupted()
     if stranded:

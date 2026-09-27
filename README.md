@@ -110,15 +110,27 @@ web page you visit can also reach that address, the server:
 - **rejects requests with a foreign `Host` header**, which blocks DNS rebinding;
 - **sends a strict Content-Security-Policy** and never sets a wildcard CORS header;
 - **never returns your password** to the interface - it is masked as `********`;
+- **keeps your X password in the OS credential store** (Windows Credential
+  Manager, macOS Keychain) rather than in a file, and never puts it in the
+  environment the browser inherits;
 - **stores `.env` and the saved session with owner-only permissions** where the
   filesystem supports it.
 
 Uploads are checked by content, not just by file extension, capped at 5 MB, and
 stored under generated names inside `data/uploads`.
 
-Two things to keep in mind: your X password is stored in clear text in `.env`
-(the browser automation needs to type it), and anyone with access to your user
-account on this machine can read `data/`. Keep both private.
+One thing to keep in mind: the automation has to type your password into X, so
+the app must be able to read it back in clear. The credential store means it is
+no longer sitting in a file that can be copied, synced to a backup or caught in
+a screenshot — but any program running under your own user account can still
+ask for it. It is protection against accidental exposure, not against someone
+who already has your session.
+
+If no credential store is available (some Linux setups), the app says so in the
+log and falls back to keeping the password in `.env`.
+
+An existing install is upgraded on first launch: the password is moved out of
+`.env` automatically, and nothing is asked of you.
 
 ## Files Created
 
@@ -135,7 +147,7 @@ data/
   uploads/            - Uploaded images
 logs/
   app.log             - Activity logs
-.env                  - Configuration file
+.env                  - Settings (no password: that lives in the OS credential store)
 ```
 
 ## Development

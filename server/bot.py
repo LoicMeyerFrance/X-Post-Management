@@ -109,7 +109,7 @@ def _get_config():
             logger.info(f"Auto-detected Chrome at: {chrome_path}")
     return {
         'username': config.env_str('X_USERNAME', '').lstrip('@'),
-        'password': config.env_str('X_PASSWORD', ''),
+        'password': config.get_password(),
         'profile_path': config.env_str('CHROME_PROFILE_DIR', ''),
         'chrome_path': chrome_path,
         'headless': False if _force_visible else config.env_bool('HEADLESS', True),

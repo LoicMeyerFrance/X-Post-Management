@@ -160,6 +160,106 @@ def _quote(value):
     return '"' + escaped + '"'
 
 
+# --- the X password lives in the OS credential store, not in .env ----------
+#
+# It still has to be readable in clear at runtime - the automation types it into
+# X - so anything running as this user can get it back. What this buys is that it
+# is no longer sitting in a text file that can be copied, synced to a backup or
+# caught in a screenshot. It is not protection against someone who already has
+# the user's session.
+
+KEYRING_SERVICE = 'X Post Management'
+KEYRING_ACCOUNT = 'X_PASSWORD'
+
+_keyring_usable = None          # None = not probed yet
+
+
+def _keyring():
+    """The keyring module, or None when it cannot be used here."""
+    global _keyring_usable
+    if _keyring_usable is False:
+        return None
+    try:
+        import keyring
+        from keyring.backends.fail import Keyring as FailKeyring
+    except Exception as exc:
+        if _keyring_usable is None:
+            logger.warning("No OS credential store available (%s); the password "
+                           "stays in .env", exc)
+        _keyring_usable = False
+        return None
+    if isinstance(keyring.get_keyring(), FailKeyring):
+        if _keyring_usable is None:
+            logger.warning("No usable credential store backend; the password stays in .env")
+        _keyring_usable = False
+        return None
+    _keyring_usable = True
+    return keyring
+
+
+def get_password(path=ENV_PATH):
+    """The stored X password, wherever it lives."""
+    ring = _keyring()
+    if ring is not None:
+        try:
+            value = ring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
+            if value:
+                return value
+        except Exception as exc:
+            logger.warning("Could not read the password from the credential store: %s", exc)
+    # Either no credential store, or nothing migrated yet.
+    return read_env_file(path).get('X_PASSWORD', '')
+
+
+def set_password(value, path=ENV_PATH):
+    """Store the password. Returns True when the credential store took it."""
+    ring = _keyring()
+    if ring is None:
+        return False
+    try:
+        if value:
+            ring.set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, value)
+        else:
+            delete_password()
+        return True
+    except Exception as exc:
+        logger.warning("Could not write to the credential store: %s", exc)
+        return False
+
+
+def delete_password():
+    ring = _keyring()
+    if ring is None:
+        return
+    try:
+        ring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
+    except Exception:
+        pass        # nothing stored, which is the state we wanted anyway
+
+
+def has_password(path=ENV_PATH):
+    return bool(get_password(path))
+
+
+def migrate_password(path=ENV_PATH):
+    """Move a password still sitting in .env into the credential store.
+
+    Runs at startup so existing installs are upgraded without the user doing
+    anything. If there is no credential store, .env is left exactly as it was.
+    """
+    on_disk = read_env_file(path)
+    plaintext = on_disk.get('X_PASSWORD', '')
+    if not plaintext:
+        return False
+    if not set_password(plaintext, path):
+        return False
+    # Rewrite .env without the secret.
+    on_disk['X_PASSWORD'] = ''
+    _write_env_lines(on_disk, path)
+    logger.info("Moved the X password out of .env into the OS credential store")
+    return True
+
+
 def _harden_permissions(path):
     """Restrict the file to the current user (best effort, POSIX only)."""
     try:
@@ -212,13 +312,16 @@ def validate(values):
     return cleaned
 
 
-def write_env_file(values, path=ENV_PATH):
-    """Write the validated settings to .env and refresh os.environ."""
-    lines = [
+def _write_env_lines(values, path=ENV_PATH):
+    """Write .env atomically, with owner-only permissions."""
+    stored_in_keyring = _keyring_usable is True
+    header = [
         '# X Post Management configuration.',
+        '# The X password is kept in the OS credential store, not here.'
+        if stored_in_keyring else
         '# Contains your X password in clear text - keep this file private.',
     ]
-    lines += [f'{key}={_quote(values.get(key, ""))}' for key in ENV_KEYS]
+    lines = header + [f'{key}={_quote(values.get(key, ""))}' for key in ENV_KEYS]
 
     tmp_path = path + '.tmp'
     with open(tmp_path, 'w', encoding='utf-8', newline='\n') as handle:
@@ -227,20 +330,33 @@ def write_env_file(values, path=ENV_PATH):
     os.replace(tmp_path, path)
     _harden_permissions(path)
 
+
+def write_env_file(values, path=ENV_PATH):
+    """Save the settings: the password to the credential store, the rest to .env."""
+    values = dict(values)
+    if set_password(values.get('X_PASSWORD', ''), path):
+        values['X_PASSWORD'] = ''       # never written to disk
+    _write_env_lines(values, path)
     reload_env(path)
 
 
 def reload_env(path=ENV_PATH):
-    """Reload .env into os.environ, clearing keys that were removed."""
+    """Reload .env into os.environ, clearing keys that were removed.
+
+    Secrets are deliberately kept out of os.environ: the browser is launched as a
+    child process and would inherit them. Read them with get_password() instead.
+    """
     on_disk = read_env_file(path)
     for key in ENV_KEYS:
-        if key in on_disk:
+        if key in SECRET_KEYS:
+            os.environ.pop(key, None)
+        elif key in on_disk:
             os.environ[key] = on_disk[key]
         else:
             os.environ.pop(key, None)
     # Any extra keys the user added by hand are honoured too.
     for key, value in on_disk.items():
-        if key not in ENV_KEYS:
+        if key not in ENV_KEYS and key not in SECRET_KEYS:
             os.environ[key] = value
 
 
@@ -249,19 +365,16 @@ def public_values(path=ENV_PATH):
     on_disk = read_env_file(path)
     values = {}
     for key in ENV_KEYS:
-        value = on_disk.get(key, '')
         if key in SECRET_KEYS:
-            values[key] = MASK if value else ''
+            values[key] = MASK if has_password(path) else ''
         else:
-            values[key] = value or DEFAULTS.get(key, '')
+            values[key] = on_disk.get(key, '') or DEFAULTS.get(key, '')
     return values
 
 
 def merge_secrets(submitted, path=ENV_PATH):
-    """Replace masked secrets with the value already stored on disk."""
-    on_disk = read_env_file(path)
+    """Replace masked secrets with the value already stored."""
     merged = dict(submitted)
-    for key in SECRET_KEYS:
-        if merged.get(key) in (MASK, None):
-            merged[key] = on_disk.get(key, '')
+    if merged.get('X_PASSWORD') in (MASK, None):
+        merged['X_PASSWORD'] = get_password(path)
     return merged

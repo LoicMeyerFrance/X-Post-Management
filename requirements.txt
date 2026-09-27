@@ -3,6 +3,7 @@ werkzeug==3.1.8
 playwright==1.58.0
 playwright-stealth==2.0.3
 apscheduler==3.11.3
+keyring==25.7.0
 pywebview==5.4
 # pywebview's Windows backend needs .NET bindings; pinned so the
 # frozen build always gets a known-good version.

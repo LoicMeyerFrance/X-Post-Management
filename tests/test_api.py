@@ -26,6 +26,12 @@ import app as appmod        # noqa: E402
 import config               # noqa: E402
 import database             # noqa: E402
 
+# The credential store is shared with the real installation, and the service name
+# is the only thing that separates them. Point the tests somewhere else before
+# anything can write: a test must never overwrite the user's actual password.
+config.KEYRING_SERVICE = f'X Post Management TEST {os.getpid()}'
+
+
 # Requests the app's own frontend would send.
 LOCAL = {'Host': '127.0.0.1:5000', 'Origin': 'http://127.0.0.1:5000'}
 
@@ -172,11 +178,10 @@ def test_settings(client):
     values = client.get('/api/settings/env', headers=LOCAL).get_json()
     check('password never sent to the frontend in clear', values['X_PASSWORD'] == config.MASK)
 
-    # Saving again with the mask must keep the stored password.
+    # Saving again with the mask must keep the stored password, wherever it lives.
     client.post('/api/settings/env', headers=LOCAL, json={**base, 'X_PASSWORD': config.MASK})
     check('masked password preserved on save',
-          config.read_env_file()['X_PASSWORD'] == 'secret',
-          config.read_env_file().get('X_PASSWORD'))
+          config.get_password() == 'secret', config.get_password())
 
     status = client.get('/api/settings/connection-status', headers=LOCAL)
     check('connection status is readable without opening a browser',
@@ -215,10 +220,15 @@ def test_env_round_trip():
     config.write_env_file(config.validate(tricky), path)
     back = config.read_env_file(path)
 
+    # The password may be in the credential store now, so ask for it properly.
     check('password with quotes and newline survives',
-          back.get('X_PASSWORD') == tricky['X_PASSWORD'], repr(back.get('X_PASSWORD')))
+          config.get_password(path) == tricky['X_PASSWORD'],
+          repr(config.get_password(path)))
     check('injected line did not overwrite another key',
           back.get('X_USERNAME') == 'loic', back.get('X_USERNAME'))
+    # The quoting itself still has to hold for the values that do stay on disk.
+    check('a value containing quotes round-trips through .env',
+          back.get('CHROME_PATH') == tricky['CHROME_PATH'], repr(back.get('CHROME_PATH')))
     check('windows path survives', back.get('CHROME_PATH') == tricky['CHROME_PATH'],
           repr(back.get('CHROME_PATH')))
 
