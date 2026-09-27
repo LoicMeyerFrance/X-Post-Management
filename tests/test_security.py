@@ -186,6 +186,59 @@ def test_input_validation(client):
           r.status_code in (400, 404), r.status_code)
 
 
+def test_account_identity():
+    """The app must never act under an account other than the configured one.
+
+    The browser profile is persistent, so a session for a previous account
+    survives a credential change. Treating "somebody is signed in" as "the right
+    person is signed in" means publishing under the wrong identity - and the app
+    reporting the configured handle while doing it.
+    """
+    section('which account is signed in')
+
+    import bot
+
+    check('a handle is normalised for comparison',
+          bot._normalise_handle('  @Alpha_User ') == 'alpha_user',
+          bot._normalise_handle('  @Alpha_User '))
+    check('an empty handle normalises to empty', bot._normalise_handle(None) == '')
+
+    class FakePage:
+        def __init__(self, handle_result):
+            self.handle_result = handle_result
+
+        def evaluate(self, _script):
+            if isinstance(self.handle_result, Exception):
+                raise self.handle_result
+            return self.handle_result
+
+    check('the handle is read from the page',
+          bot._current_handle(FakePage('alpha_user')) == 'alpha_user')
+    check('a leading @ and casing are ignored',
+          bot._current_handle(FakePage('@Beta_User')) == 'beta_user')
+    check('an unreadable page gives no handle, not a crash',
+          bot._current_handle(FakePage(RuntimeError('detached'))) == '')
+    check('a blank result gives no handle', bot._current_handle(FakePage('')) == '')
+
+    # Signing out must never clear cookies wholesale: CHROME_PROFILE_DIR can
+    # point at the user's real Chrome profile.
+    source = open(os.path.join(ROOT, 'server', 'bot.py'), encoding='utf-8').read()
+    signout = source[source.index('def _sign_out'):source.index('def _login')]
+    check('sign-out clears cookies per domain', 'clear_cookies(domain=' in signout, signout[:80])
+    check('sign-out never clears every cookie',
+          'clear_cookies()' not in signout, signout[:80])
+    check('sign-out refuses rather than clearing everything on old Playwright',
+          'except TypeError' in signout and 'return False' in signout)
+
+    # And the login path has to consult the handle before trusting the session.
+    login = source[source.index('def _login'):source.index('def _do_post')]
+    check('login compares the signed-in handle with the configured one',
+          '_current_handle(page)' in login and '!= wanted' in login, login[:200])
+    check('login signs out when they differ', '_sign_out(page)' in login)
+    check('login reports the account it actually found',
+          'signed in as @' in login or 'not @' in login)
+
+
 def test_source():
     section('settings that must not come back')
 
@@ -303,6 +356,7 @@ def main():
     test_uploads(client)
     test_input_validation(client)
     test_password_storage()
+    test_account_identity()
     test_source()
 
     print(f'\n{len(passed)} passed, {len(failed)} failed')

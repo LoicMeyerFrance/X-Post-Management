@@ -48,6 +48,30 @@ DB_PATH = os.path.join(DATA_DIR, 'posts.db')
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 LOG_FILE = os.path.join(LOG_DIR, 'app.log')
 
+
+# --- per-account caches ----------------------------------------------------
+#
+# The profile name, avatar and verification badge belong to one X account, and
+# the app can be pointed at another at any time. One shared file would show the
+# previous account's identity - and the badge decides the character limit, so a
+# stale one silently caps a Premium account at 280.
+
+def _file_safe(account):
+    """X handles are letters, digits and underscores; anything else is dropped
+    rather than trusted to be safe in a path."""
+    return ''.join(c for c in str(account or '') if c.isalnum() or c == '_').lower()
+
+
+def profile_info_path(account=''):
+    handle = _file_safe(account)
+    return os.path.join(DATA_DIR, f'profile_info_{handle}.json' if handle
+                        else 'profile_info.json')
+
+
+def profile_picture_name(account=''):
+    handle = _file_safe(account)
+    return f'profile_picture_{handle}.jpg' if handle else 'profile_picture.jpg'
+
 # Create directories on import
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)

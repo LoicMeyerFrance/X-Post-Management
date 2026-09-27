@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, type ReactNode } from
 
 export type Page =
   | 'composer' | 'schedule' | 'calendar' | 'history'
-  | 'logs' | 'settings' | 'profile' | 'about'
+  | 'logs' | 'settings' | 'profile' | 'agent' | 'about'
 
 interface NavigationState {
   /** Go to a page, optionally asking it to reveal one of its sections. */

@@ -171,6 +171,11 @@ def _quote(value):
 KEYRING_SERVICE = 'X Post Management'
 KEYRING_ACCOUNT = 'X_PASSWORD'
 
+# The Anthropic API key for the assistant tab lives in the same store. Unlike
+# the X password it has no .env fallback: it was never kept in a file, so there
+# is nothing to migrate and no reason to start.
+KEYRING_ANTHROPIC_KEY = 'ANTHROPIC_API_KEY'
+
 _keyring_usable = None          # None = not probed yet
 
 
@@ -197,44 +202,60 @@ def _keyring():
     return keyring
 
 
+def get_secret(account):
+    """Read one secret from the OS credential store. '' when absent."""
+    ring = _keyring()
+    if ring is None:
+        return ''
+    try:
+        return ring.get_password(KEYRING_SERVICE, account) or ''
+    except Exception as exc:
+        logger.warning("Could not read %s from the credential store: %s", account, exc)
+        return ''
+
+
+def set_secret(account, value):
+    """Store or clear one secret. Returns True when the store took it."""
+    ring = _keyring()
+    if ring is None:
+        return False
+    try:
+        if value:
+            ring.set_password(KEYRING_SERVICE, account, value)
+        else:
+            delete_secret(account)
+        return True
+    except Exception as exc:
+        logger.warning("Could not write %s to the credential store: %s", account, exc)
+        return False
+
+
+def delete_secret(account):
+    ring = _keyring()
+    if ring is None:
+        return
+    try:
+        ring.delete_password(KEYRING_SERVICE, account)
+    except Exception:
+        pass        # nothing stored, which is the state we wanted anyway
+
+
 def get_password(path=ENV_PATH):
     """The stored X password, wherever it lives."""
-    ring = _keyring()
-    if ring is not None:
-        try:
-            value = ring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
-            if value:
-                return value
-        except Exception as exc:
-            logger.warning("Could not read the password from the credential store: %s", exc)
+    value = get_secret(KEYRING_ACCOUNT)
+    if value:
+        return value
     # Either no credential store, or nothing migrated yet.
     return read_env_file(path).get('X_PASSWORD', '')
 
 
 def set_password(value, path=ENV_PATH):
     """Store the password. Returns True when the credential store took it."""
-    ring = _keyring()
-    if ring is None:
-        return False
-    try:
-        if value:
-            ring.set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, value)
-        else:
-            delete_password()
-        return True
-    except Exception as exc:
-        logger.warning("Could not write to the credential store: %s", exc)
-        return False
+    return set_secret(KEYRING_ACCOUNT, value)
 
 
 def delete_password():
-    ring = _keyring()
-    if ring is None:
-        return
-    try:
-        ring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
-    except Exception:
-        pass        # nothing stored, which is the state we wanted anyway
+    delete_secret(KEYRING_ACCOUNT)
 
 
 def has_password(path=ENV_PATH):

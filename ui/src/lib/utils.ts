@@ -53,6 +53,24 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/** The YYYY-MM-DD the calendar should file a timestamp under, in local time.
+ *
+ *  Two kinds of timestamp reach the calendar. The app writes naive local ISO
+ *  ("2026-09-27T23:01:13"), which is already the day the user means. X reports
+ *  UTC ("2026-09-27T21:01:13.000Z"), which is not: slicing that string files a
+ *  post made at 01:00 local under the previous day. Only the second kind needs
+ *  converting, and the trailing Z or offset is what tells them apart. */
+export function localDateKey(isoStr: string | null | undefined): string | null {
+  if (!isoStr) return null
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(isoStr.trim())
+  if (!hasZone) return isoStr.slice(0, 10) || null
+  const date = new Date(isoStr)
+  if (Number.isNaN(date.getTime())) return isoStr.slice(0, 10) || null
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
 export function formatDate(isoStr: string, locale: Locale = 'fr'): string {
   if (!isoStr) return ''
   try {

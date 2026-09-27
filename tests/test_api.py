@@ -9,6 +9,7 @@ touched.
 
 import io
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -69,6 +70,39 @@ def test_security(client):
     check('no wildcard CORS header', 'Access-Control-Allow-Origin' not in r.headers)
     check('CSP header set', 'Content-Security-Policy' in r.headers)
     check('nosniff header set', r.headers.get('X-Content-Type-Options') == 'nosniff')
+
+
+def test_preference_keys(client):
+    """Every preference the interface saves must be accepted.
+
+    A missing key is rejected with a 400 that the frontend swallows, so the
+    toggle looks like it saved and silently forgets itself on the next visit.
+    """
+    section('preferences the interface actually writes')
+
+    ui_dir = os.path.join(ROOT, 'ui', 'src')
+    written = set()
+    for folder, _dirs, files in os.walk(ui_dir):
+        for name in files:
+            if not name.endswith(('.ts', '.tsx')):
+                continue
+            path = os.path.join(folder, name)
+            with open(path, encoding='utf-8') as handle:
+                text = handle.read()
+            for match in re.finditer(r'savePreferences\(\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*:',
+                                     text):
+                written.add(match.group(1))
+
+    check('the frontend was scanned for preference writes', bool(written), written)
+    missing = sorted(written - appmod.PREFERENCE_KEYS)
+    check('every key the frontend saves is allow-listed', not missing, missing)
+
+    for key in sorted(written):
+        r = client.post('/api/settings/preferences', json={key: 'true'}, headers=LOCAL)
+        check(f'{key} is accepted', r.status_code == 200, r.status_code)
+
+    r = client.post('/api/settings/preferences', json={'notAThing': 'true'}, headers=LOCAL)
+    check('an unknown preference is still refused', r.status_code == 400, r.status_code)
 
 
 def test_validation(client):
@@ -324,6 +358,26 @@ def test_publishing_is_queued(client):
         wait_for(pid, 'posting')
         check('so the browser still ran only once', len(calls) == 1, calls)
         client.delete(f'/api/posts/{pid}', headers=LOCAL)
+
+        # --- and it cannot be published again once it is out ---
+        # Republishing would put a second, identical tweet on the timeline. The
+        # in-flight guard above does not cover this: by then the post is 'posted'.
+        calls.clear()
+        pid = new_draft('already out')
+        client.post(f'/api/posts/{pid}/post-now', headers=LOCAL)
+        wait_for(pid, 'posting')
+        again = client.post(f'/api/posts/{pid}/post-now', headers=LOCAL)
+        check('publishing an already-published post is refused',
+              again.status_code == 409, again.status_code)
+        check('the refusal says to duplicate it instead',
+              'uplicate' in (again.get_json() or {}).get('error', ''), again.get_json())
+        check('so no second tweet went out', len(calls) == 1, calls)
+
+        again = client.post(f'/api/posts/{pid}/schedule-now', headers=LOCAL)
+        check('scheduling an already-published post is refused too',
+              again.status_code == 409, again.status_code)
+        check('and that sent nothing either', len(calls) == 1, calls)
+        client.delete(f'/api/posts/{pid}', headers=LOCAL)
     finally:
         bot._do_post = original
 
@@ -516,7 +570,9 @@ def test_verified_detection(client):
     # And the limit that hangs off it.
     import json
     import os
-    info = os.path.join(appmod.DATA_DIR, 'profile_info.json')
+    # Ask the app where it keeps the cache: it is per-account now, so a
+    # hardcoded name is read by nobody once a username is configured.
+    info = appmod.profile_info_path()
     try:
         with open(info, 'w', encoding='utf-8') as fh:
             json.dump({'is_verified': False}, fh)
@@ -619,7 +675,9 @@ def test_video_upload(client):
 
     # The ceiling follows the account: X gives Premium far more room.
     import json as _json
-    info = os.path.join(appmod.DATA_DIR, 'profile_info.json')
+    # Ask the app where it keeps the cache: it is per-account now, so a
+    # hardcoded name is read by nobody once a username is configured.
+    info = appmod.profile_info_path()
     try:
         with open(info, 'w', encoding='utf-8') as fh:
             _json.dump({'is_verified': False}, fh)
@@ -655,6 +713,7 @@ def main():
     client = appmod.app.test_client()
 
     test_security(client)
+    test_preference_keys(client)
     test_validation(client)
     test_post_lifecycle(client)
     test_settings(client)

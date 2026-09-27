@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Wifi, RefreshCw, Loader2, HelpCircle, X, Save, Pencil, AlertCircle, Trash2, BadgeCheck, Search, LogIn, Monitor, EyeOff } from 'lucide-react'
+import { Wifi, RefreshCw, Loader2, HelpCircle, X, Save, Pencil, AlertCircle, Trash2, BadgeCheck, Search, LogIn, Monitor, EyeOff, Bot, Terminal, KeyRound } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
 import { useConfirm } from '@/components/ConfirmModal'
@@ -133,6 +133,44 @@ export function Settings() {
     const timer = setTimeout(() => setHighlightBrowser(false), 2200)
     return () => clearTimeout(timer)
   }, [pendingSection, clearPendingSection])
+
+  // Same treatment for the assistant section, reached from the assistant tab.
+  const assistantRef = useRef<HTMLDivElement>(null)
+  const [highlightAssistant, setHighlightAssistant] = useState(false)
+  const [agentStatus, setAgentStatus] = useState<api.AgentStatus | null>(null)
+  const [agentKey, setAgentKey] = useState('')
+  const [agentKeySaving, setAgentKeySaving] = useState(false)
+
+  useEffect(() => {
+    if (pendingSection !== 'assistant') return
+    clearPendingSection()
+    assistantRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setHighlightAssistant(true)
+    const timer = setTimeout(() => setHighlightAssistant(false), 2200)
+    return () => clearTimeout(timer)
+  }, [pendingSection, clearPendingSection])
+
+  const loadAgentStatus = useCallback(async () => {
+    try {
+      setAgentStatus(await api.fetchAgentStatus())
+    } catch { /* the section degrades to its install hint */ }
+  }, [])
+
+  useEffect(() => { loadAgentStatus() }, [loadAgentStatus])
+
+  const handleSaveAgentKey = async (value: string) => {
+    setAgentKeySaving(true)
+    try {
+      await api.saveAgentKey(value)
+      setAgentKey('')
+      toast.success(value ? t('settings.assistantKeySaved') : t('settings.assistantKeyCleared'))
+      await loadAgentStatus()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('common.serverError'))
+    } finally {
+      setAgentKeySaving(false)
+    }
+  }
 
   const handleConnectX = async () => {
     setConnectingX(true)
@@ -454,6 +492,74 @@ C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`}</pre>
               </button>
             )
           })}
+        </div>
+      </div>
+
+      {/* Assistant */}
+      <div
+        id="assistant"
+        ref={assistantRef}
+        className={`px-6 py-6 border-b border-border transition-colors duration-500 ${
+          highlightAssistant ? 'bg-accent-light dark:bg-accent/15' : ''
+        }`}
+      >
+        <h3 className="text-sm font-semibold text-text mb-2 flex items-center gap-2">
+          <Bot size={15} className="text-text-secondary" />
+          {t('settings.assistantSection')}
+        </h3>
+        <p className="text-xs text-text-muted mb-4 max-w-2xl leading-relaxed">
+          {t('settings.assistantIntro')}
+        </p>
+
+        <div className="flex items-center gap-2 text-xs mb-4">
+          <Terminal size={13} className={agentStatus?.cli_installed ? 'text-success' : 'text-warning'} />
+          {agentStatus?.cli_installed ? (
+            <span className="text-success">
+              {t('settings.assistantCliFound')}
+              {agentStatus.cli_version && <span className="font-mono ml-1.5">v{agentStatus.cli_version}</span>}
+            </span>
+          ) : (
+            <span className="text-warning">{t('settings.assistantCliMissing')}</span>
+          )}
+        </div>
+
+        <label className="block text-xs font-medium text-text-secondary mb-1">
+          {t('settings.assistantKeyLabel')}
+        </label>
+        <p className="text-[11px] text-text-muted mb-2 max-w-2xl leading-relaxed">
+          {t('settings.assistantKeyDesc')}
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[240px]">
+            <KeyRound size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+            <input
+              type="password"
+              value={agentKey}
+              onChange={e => setAgentKey(e.target.value)}
+              placeholder={agentStatus?.has_api_key ? '••••••••••••••••' : 'sk-ant-...'}
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full pl-8 pr-3 py-2 text-sm border border-border rounded-lg bg-bg text-text placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/20"
+            />
+          </div>
+          <button
+            onClick={() => handleSaveAgentKey(agentKey)}
+            disabled={agentKeySaving || !agentKey.trim()}
+            className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-white bg-accent rounded-md hover:bg-accent-hover transition-colors disabled:opacity-40"
+          >
+            {agentKeySaving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+            {t('common.save')}
+          </button>
+          {agentStatus?.has_api_key && (
+            <button
+              onClick={() => handleSaveAgentKey('')}
+              disabled={agentKeySaving}
+              className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-text-secondary border border-border rounded-md hover:bg-bg-hover transition-colors disabled:opacity-50"
+            >
+              <Trash2 size={13} />
+              {t('settings.assistantKeyClear')}
+            </button>
+          )}
         </div>
       </div>
 

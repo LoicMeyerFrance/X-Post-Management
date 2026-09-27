@@ -3,6 +3,7 @@ import { Toaster } from 'sonner'
 import { SettingsProvider, useSettings } from './contexts/SettingsContext'
 import { ComposerProvider } from './contexts/ComposerContext'
 import { NavigationProvider, type Page } from './contexts/NavigationContext'
+import { AgentProvider } from './contexts/AgentContext'
 import { ConfirmProvider } from './components/ConfirmModal'
 import { SetupWizard } from './components/SetupWizard'
 import { Sidebar } from './components/Sidebar'
@@ -12,6 +13,7 @@ import { Calendar } from './pages/Calendar'
 import { History } from './pages/History'
 import { Logs } from './pages/Logs'
 import { Settings } from './pages/Settings'
+import { Agent } from './pages/Agent'
 import { About } from './pages/About'
 import { Loader2, Coffee } from 'lucide-react'
 import * as api from './lib/api'
@@ -88,6 +90,7 @@ function AppContent() {
       case 'logs': return <Logs />
       case 'settings': return <Settings />
       case 'profile': return <Profile />
+      case 'agent': return <Agent />
       case 'about': return <About />
     }
   }
@@ -134,9 +137,13 @@ export default function App() {
   return (
     <SettingsProvider>
     <ComposerProvider>
+    {/* Above the pages on purpose: the assistant's transcript must survive
+        switching tabs, and a running turn must not be cut short by it. */}
+    <AgentProvider>
     <ConfirmProvider>
       <AppContent />
     </ConfirmProvider>
+    </AgentProvider>
     </ComposerProvider>
     </SettingsProvider>
   )

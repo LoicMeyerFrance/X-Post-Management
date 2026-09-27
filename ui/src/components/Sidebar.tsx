@@ -10,13 +10,14 @@ import {
   WifiOff,
   Lock,
   Info,
+  Bot,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { useSettings } from '@/contexts/SettingsContext'
 import type { TranslationKey } from '@/lib/i18n'
 
-type Page = 'composer' | 'schedule' | 'calendar' | 'history' | 'logs' | 'settings' | 'profile' | 'about'
+type Page = 'composer' | 'schedule' | 'calendar' | 'history' | 'logs' | 'settings' | 'profile' | 'agent' | 'about'
 
 interface SidebarProps {
   activePage: Page
@@ -28,6 +29,7 @@ const nav: { id: Page; labelKey: TranslationKey; icon: typeof PenSquare }[] = [
   { id: 'schedule', labelKey: 'nav.schedule', icon: CalendarClock },
   { id: 'calendar', labelKey: 'nav.calendar', icon: CalendarDays },
   { id: 'history', labelKey: 'nav.history', icon: History },
+  { id: 'agent', labelKey: 'nav.agent', icon: Bot },
   { id: 'logs', labelKey: 'nav.logs', icon: ScrollText },
   { id: 'profile', labelKey: 'nav.profile', icon: User },
   { id: 'settings', labelKey: 'nav.settings', icon: Settings },

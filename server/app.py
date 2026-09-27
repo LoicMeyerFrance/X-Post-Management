@@ -5,14 +5,24 @@ import os
 import platform
 import shutil
 import socket
+import sys
 import threading
 import uuid
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
+# The frozen build has no python.exe for Claude Code to launch, so the executable
+# re-runs itself in MCP mode. This has to happen before anything heavy is
+# imported: the MCP child has no use for Flask, the scheduler or Playwright, and
+# importing the browser stack in it would cost seconds for nothing.
+if __name__ == '__main__' and '--mcp' in sys.argv:
+    import mcp_server
+    sys.exit(mcp_server.main())
+
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
+import agent
 import bot
 import config
 import database
@@ -47,9 +57,47 @@ def _read_version():
 
 APP_VERSION = _read_version()
 
-PROFILE_INFO_PATH = os.path.join(DATA_DIR, 'profile_info.json')
 PREFERENCES_PATH = os.path.join(DATA_DIR, 'preferences.json')
-PROFILE_PICTURE_NAME = 'profile_picture.jpg'
+
+
+def profile_info_path():
+    """Where this account's cached profile lives."""
+    return paths.profile_info_path(database.current_account())
+
+
+def profile_picture_name():
+    return paths.profile_picture_name(database.current_account())
+
+
+def adopt_legacy_profile_cache():
+    """Move a pre-scoping profile cache under the account it describes.
+
+    Before the cache was per-account there was one profile_info.json. It names
+    the account it belongs to, so it can be filed correctly instead of being
+    shown for whoever is configured now.
+    """
+    legacy_info = os.path.join(DATA_DIR, 'profile_info.json')
+    if not os.path.isfile(legacy_info):
+        return
+    info = read_json_file(legacy_info)
+    handle = database.normalise_account(info.get('username'))
+    if not handle:
+        return
+    target = paths.profile_info_path(handle)
+    if not os.path.exists(target):
+        try:
+            os.replace(legacy_info, target)
+            logger.info("Filed the existing profile cache under @%s", handle)
+        except OSError as exc:
+            logger.warning("Could not move the profile cache: %s", exc)
+            return
+    legacy_picture = os.path.join(DATA_DIR, 'profile_picture.jpg')
+    new_picture = os.path.join(DATA_DIR, paths.profile_picture_name(handle))
+    if os.path.isfile(legacy_picture) and not os.path.exists(new_picture):
+        try:
+            os.replace(legacy_picture, new_picture)
+        except OSError as exc:
+            logger.warning("Could not move the profile picture: %s", exc)
 
 # X accepts MP4 and MOV (H.264 + AAC). Everything else is rejected by its own
 # uploader, so there is no point letting it through here.
@@ -73,6 +121,12 @@ DEFAULT_PORT = int(os.getenv('PORT', '5000'))
 
 # Statuses a client is allowed to set directly.
 CLIENT_STATUSES = {'draft', 'scheduled', 'posting'}
+
+# Publishing something already published would put a second, identical tweet on
+# the timeline. Refused whoever asks - the calendar, the assistant, or a script.
+# "Duplicate" is the endpoint for deliberately posting the same thing twice.
+ALREADY_POSTED = ('This post has already been published. Duplicate it if you '
+                  'want to post it again.')
 
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path='')
 app.config['MAX_CONTENT_LENGTH'] = MAX_REQUEST_SIZE
@@ -132,7 +186,7 @@ def write_json_file(path, data):
 
 def is_premium():
     """Does the stored profile say this account is verified?"""
-    return bool(read_json_file(PROFILE_INFO_PATH).get('is_verified'))
+    return bool(read_json_file(profile_info_path()).get('is_verified'))
 
 
 def char_limit():
@@ -485,6 +539,8 @@ def api_post_now(post_id):
         return jsonify({'error': 'Post not found'}), 404
     if post['status'] in ('posting', 'scheduling'):
         return jsonify({'error': 'This post is already being processed'}), 409
+    if post['status'] == 'posted':
+        return jsonify({'error': ALREADY_POSTED}), 409
 
     return _queue_publish(post, post_id, 'published immediately')
 
@@ -508,6 +564,8 @@ def api_schedule_now(post_id):
         return jsonify({'error': 'Post not found'}), 404
     if post['status'] in ('posting', 'scheduling'):
         return jsonify({'error': 'This post is already being processed'}), 409
+    if post['status'] == 'posted':
+        return jsonify({'error': ALREADY_POSTED}), 409
 
     scheduled_at = post.get('scheduled_at')
     when = parse_iso_datetime(scheduled_at)
@@ -646,7 +704,15 @@ def api_duplicate_post(post_id):
 
 # Every UI preference the frontend persists. Keeping this closed stops the
 # preferences file from growing without bound.
-PREFERENCE_KEYS = {'locale', 'theme', 'setupComplete', 'browserHintSeen'}
+# Whether the assistant may publish without asking. Declared here so the
+# preference allow-list below can name it.
+AGENT_AUTO_KEY = 'agentAutoApprove'
+
+# Anything the interface may remember. A key missing from here is rejected with a
+# 400, which the frontend swallows - so a toggle whose key was never added here
+# looks like it saved and silently forgets itself.
+PREFERENCE_KEYS = {'locale', 'theme', 'setupComplete', 'browserHintSeen',
+                   'calendarShowFromX', AGENT_AUTO_KEY}
 
 
 @app.route('/api/settings/preferences', methods=['GET'])
@@ -690,14 +756,29 @@ def api_save_env():
     except config.ConfigError as exc:
         return jsonify({'error': str(exc)}), 400
 
+    previous = database.current_account()
     config.write_env_file(cleaned)
+    switched_to = database.current_account()
+
+    # Rows created before any username was configured belong to whoever is now
+    # configured; rows already stamped with another handle are left where they
+    # are, so a switch never drags the other account's history along.
+    database.adopt_orphan_rows(switched_to)
+
+    if previous and switched_to and previous != switched_to:
+        logger.info("Account switched from @%s to @%s; each keeps its own posts, "
+                    "timeline mirror and profile", previous, switched_to)
 
     # Pick up the new browser settings and check interval without a restart.
     bot.restart_browser()
     scheduler.reschedule()
 
     logger.info("Environment settings updated")
-    return jsonify({'success': True})
+    return jsonify({
+        'success': True,
+        'account': switched_to,
+        'switched_from': previous if previous and previous != switched_to else '',
+    })
 
 
 @app.route('/api/settings/test-connection', methods=['GET'])
@@ -715,6 +796,152 @@ def api_connect_x():
 def api_connection_status():
     """Last known connection state. Does not open a browser."""
     return jsonify(bot.session_status())
+
+
+# --- Assistant (Claude Code over MCP) ---
+#
+# The app does not talk to any model itself. It runs the user's own Claude Code
+# CLI and streams what it prints, with this app's MCP server attached so the
+# agent can read and write posts. Whether it may publish is decided here, from
+# the stored preference - never from the request body, so the answer cannot
+# change per call.
+
+def agent_auto_approve():
+    """True when the user ticked automatic approval in the assistant tab."""
+    return str(read_json_file(PREFERENCES_PATH).get(AGENT_AUTO_KEY, '')).lower() == 'true'
+
+
+def _api_base():
+    """The URL the MCP child should call back on: this very server.
+
+    Read from the request, not from DEFAULT_PORT: pick_port() settles on another
+    port whenever 5000 is busy, and a child told the wrong port reports the app
+    as unreachable. check_request has already established that the Host is
+    loopback; it is re-checked here so this can never point the child elsewhere.
+    """
+    host = request.host
+    if host and security.is_loopback_host(host):
+        return f'{request.scheme}://{host}'
+    return f'http://127.0.0.1:{DEFAULT_PORT}'
+
+
+@app.route('/api/agent/status', methods=['GET'])
+def api_agent_status():
+    info = agent.status()
+    info['auto_approve'] = agent_auto_approve()
+    info['running'] = agent.is_running()
+    return jsonify(info)
+
+
+@app.route('/api/agent/key', methods=['POST'])
+def api_agent_key():
+    """Store or clear the Anthropic API key. Never read back in clear text."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object'}), 400
+
+    key = str(data.get('api_key', '')).strip()
+    if key and key == config.MASK:
+        return jsonify({'saved': True, 'has_api_key': True})      # unchanged
+    if key and ('\x00' in key or '\n' in key or len(key) > 400):
+        return jsonify({'error': 'That does not look like an API key'}), 400
+
+    if not agent.set_api_key(key):
+        return jsonify({'error': 'No OS credential store is available, so the key '
+                                 'cannot be stored safely. Sign in to Claude Code '
+                                 'instead and leave this blank.'}), 500
+    logger.info("Anthropic API key %s", 'stored' if key else 'cleared')
+    return jsonify({'saved': True, 'has_api_key': bool(key)})
+
+
+@app.route('/api/agent/auto', methods=['POST'])
+def api_agent_auto():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or 'auto_approve' not in data:
+        return jsonify({'error': 'Expected {"auto_approve": true|false}'}), 400
+    enabled = bool(data['auto_approve'])
+    prefs = read_json_file(PREFERENCES_PATH)
+    prefs[AGENT_AUTO_KEY] = 'true' if enabled else 'false'
+    write_json_file(PREFERENCES_PATH, prefs)
+    logger.info("Assistant approval mode set to %s", 'automatic' if enabled else 'manual')
+    return jsonify({'auto_approve': enabled})
+
+
+@app.route('/api/agent/install', methods=['POST'])
+def api_agent_install():
+    """Run Anthropic's own installer so the user never opens a terminal.
+
+    This fetches and runs a remote script, which is what the official docs tell
+    people to do by hand. The exact command is in /api/agent/status so the
+    interface can show it before the user agrees to it.
+    """
+    if agent.find_cli():
+        return jsonify({'installed': True, 'output': '', 'already': True})
+
+    ok, output = agent.install()
+    status_code = 200 if ok else 500
+    return jsonify({'installed': ok, 'output': output}), status_code
+
+
+@app.route('/api/agent/login', methods=['POST'])
+def api_agent_login():
+    """Open the Claude sign-in. The app never sees those credentials."""
+    ok, detail = agent.start_login()
+    return jsonify({'started': ok, 'detail': detail}), (200 if ok else 500)
+
+
+@app.route('/api/agent/stop', methods=['POST'])
+def api_agent_stop():
+    return jsonify({'stopped': agent.stop()})
+
+
+@app.route('/api/agent/reset', methods=['POST'])
+def api_agent_reset():
+    """Forget the conversation, so the next message starts a fresh session."""
+    agent.stop()
+    agent.clear_session()
+    return jsonify({'reset': True})
+
+
+@app.route('/api/agent/chat', methods=['POST'])
+def api_agent_chat():
+    """Run one turn, streaming the CLI's events back as server-sent events."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object'}), 400
+
+    message = str(data.get('message', '')).strip()
+    if not message:
+        return jsonify({'error': 'Message is empty'}), 400
+
+    auto = agent_auto_approve()
+    fresh = bool(data.get('new_conversation'))
+
+    try:
+        events = agent.stream(message, auto=auto, api_base=_api_base(), resume=not fresh)
+    except agent.AgentError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    def emit():
+        try:
+            for event in events:
+                yield 'data: ' + json.dumps(event, ensure_ascii=False) + '\n\n'
+        except agent.AgentError as exc:
+            yield 'data: ' + json.dumps({'type': 'xpm', 'subtype': 'failed',
+                                         'error': str(exc)}) + '\n\n'
+        except Exception:
+            logger.exception("Assistant stream failed")
+            yield 'data: ' + json.dumps({'type': 'xpm', 'subtype': 'failed',
+                                         'error': 'The assistant stopped unexpectedly. '
+                                                  'Check the logs.'}) + '\n\n'
+        finally:
+            yield 'data: [DONE]\n\n'
+
+    return app.response_class(emit(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-store',
+        # Without this a proxy or the webview may hold the whole stream back.
+        'X-Accel-Buffering': 'no',
+    })
 
 
 # --- Profile ---
@@ -749,7 +976,7 @@ def api_fetch_profile():
         'bio': result.get('bio', ''),
         'join_date': result.get('join_date', ''),
     }
-    write_json_file(PROFILE_INFO_PATH, info)
+    write_json_file(profile_info_path(), info)
     database.add_follower_snapshot(
         info['followers_count'], info['following_count'], username=info['username'])
     return jsonify(result)
@@ -757,15 +984,16 @@ def api_fetch_profile():
 
 @app.route('/api/profile', methods=['GET'])
 def api_get_profile():
-    info = read_json_file(PROFILE_INFO_PATH)
+    info = read_json_file(profile_info_path())
     payload = _profile_payload(info)
-    payload['has_picture'] = os.path.isfile(os.path.join(DATA_DIR, PROFILE_PICTURE_NAME))
+    payload['has_picture'] = os.path.isfile(
+        os.path.join(DATA_DIR, profile_picture_name()))
     return jsonify(payload)
 
 
 @app.route('/api/profile/stats', methods=['GET'])
 def api_profile_stats():
-    info = read_json_file(PROFILE_INFO_PATH)
+    info = read_json_file(profile_info_path())
     return jsonify({
         'profile': _profile_payload(info),
         'history': database.get_follower_history(username=info.get('username')),
@@ -774,11 +1002,61 @@ def api_profile_stats():
 
 @app.route('/api/profile/picture')
 def api_profile_picture():
-    path = os.path.join(DATA_DIR, PROFILE_PICTURE_NAME)
+    name = profile_picture_name()
+    path = os.path.join(DATA_DIR, name)
     if not os.path.isfile(path):
         return jsonify({'error': 'No profile picture'}), 404
-    return send_from_directory(DATA_DIR, PROFILE_PICTURE_NAME, max_age=60,
+    return send_from_directory(DATA_DIR, name, max_age=60,
                                mimetype=detect_image_mime(path))
+
+
+# --- The X timeline, read back from the account itself ---
+#
+# The app only ever knew the posts it sent. This reads the profile, so anything
+# published from the phone or the website shows up too. It is a mirror: nothing
+# here is scheduled, retried or deleted, and the rows live in their own table.
+
+@app.route('/api/history/x', methods=['GET'])
+def api_x_history():
+    posts = database.get_x_posts()
+    return jsonify({
+        'tweets': posts,
+        'count': len(posts),
+        'last_sync': max((p.get('fetched_at') or '') for p in posts) if posts else '',
+    })
+
+
+@app.route('/api/history/x/sync', methods=['POST'])
+def api_x_history_sync():
+    """Read the profile and store what is there.
+
+    Synchronous like the other browser sweeps: it holds the single worker, and
+    the client has nothing useful to do until it finishes. Bounded by the scroll
+    ceiling in bot.py so it cannot run away.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        max_tweets = int(data.get('max_tweets') or bot.TIMELINE_MAX_TWEETS)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'max_tweets must be a whole number'}), 400
+    max_tweets = max(1, min(max_tweets, bot.TIMELINE_MAX_TWEETS))
+
+    known_before = database.count_x_posts()
+    result = bot.fetch_timeline(max_tweets=max_tweets)
+    if not result.get('success'):
+        return jsonify({'error': result.get('error', 'Could not read the timeline')}), 200
+
+    tweets = result.get('tweets') or []
+    added, updated = database.save_x_posts(tweets)
+    logger.info("X history synced: %s read, %s new, %s refreshed (had %s)",
+                len(tweets), added, updated, known_before)
+    return jsonify({
+        'read': len(tweets),
+        'added': added,
+        'updated': updated,
+        'total': database.count_x_posts(),
+        'reached_ceiling': len(tweets) >= max_tweets,
+    })
 
 
 # --- Logs ---
@@ -964,6 +1242,7 @@ def main():
         logger.info("Your X password is now stored in the OS credential store")
 
     database.init_db()
+    adopt_legacy_profile_cache()
     stranded = database.recover_interrupted()
     if stranded:
         logger.warning("%s post(s) were interrupted by a previous shutdown "

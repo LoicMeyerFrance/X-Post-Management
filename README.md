@@ -20,6 +20,11 @@ Desktop application to manage and schedule your X (Twitter) posts locally and se
 - View publication history
 - Delete tweets directly from the app
 - Calendar view of your posts
+- **Everything on X**: read your whole timeline back from your profile, including
+  posts published from your phone or the website, with their view and like counts
+- **Assistant** tab: describe what you want in plain words and it writes, schedules
+  and fills your calendar — it runs *your own* Claude Code, so there is no extra
+  subscription (see [Assistant](#assistant))
 - **My Profile** page: followers/following stats, bio, growth chart, follower variations
 - Auto-detect Chrome installation
 - Persistent preferences (language, theme) across sessions
@@ -83,6 +88,103 @@ If you do set `CHROME_PROFILE_DIR` to one of your real Chrome profiles, **that
 Chrome has to stay closed** while the app runs — a profile cannot be open in two
 browsers at once.
 
+## Everything on X
+
+**History → Everything on X** reads your profile in the browser and mirrors it
+locally. Until now the app only knew the posts it had sent itself; this picks up
+everything else — posts made from your phone, from the website, before you
+installed the app — and shows each one tagged *via the app* or *elsewhere*, with
+its view and like counts.
+
+The calendar can show it too: **All of X** in the calendar toolbar adds the posts
+this app never sent, as hollow dots, so a day shows everything that actually went
+out. A post sent from here already has its own entry, so it is never counted
+twice. Those entries are read-only — there is nothing to reschedule about a tweet
+that is already published.
+
+It is a **read-only mirror**, kept in its own `x_posts` table. Nothing there is
+scheduled, retried or published: mixing it into your real posts would put rows in
+front of the scheduler that it has no business touching. Re-reading refreshes the
+counts and never duplicates a tweet, so "new since last time" stays meaningful.
+
+Two limits worth knowing:
+
+- **X decides how far back you can scroll.** The read stops when the timeline
+  stops growing, capped at 800 tweets; a long history may not come back whole,
+  and the app says so when it hits the ceiling.
+- **A count of zero comes back empty**, because X renders the button with no
+  number at all rather than a `0`.
+
+## Assistant
+
+The **Assistant** tab is a chat: ask for what you want and it writes the posts,
+schedules them and reads the calendar back to you. *"Prepare three posts about
+the 1.5 release, one a day at 9am"* is a complete instruction.
+
+It does not embed a model. The app runs the
+[Claude Code](https://code.claude.com) CLI installed on your machine as a child
+process, and gives it a small set of tools over
+[MCP](https://modelcontextprotocol.io) — `create_post`, `list_posts`,
+`update_post`, `get_limits` and so on, all of which go through the same local API
+and the same validation as the rest of the interface.
+
+**Setup: two buttons, no terminal.** Open the Assistant tab and it shows what is
+missing and how to fix it:
+
+1. **Install** runs Anthropic's official installer for you. No Node.js, nothing
+   to download by hand, and the exact command is shown before it runs. (It is
+   `irm https://claude.ai/install.ps1 | iex` on Windows,
+   `curl -fsSL https://claude.ai/install.sh | bash` elsewhere — run it yourself if
+   you would rather.)
+2. **Sign in** opens the Claude sign-in page in your browser.
+
+Each step shows a tick once it is done, read from `claude auth status` rather than
+guessed, so the tab never sends you into a chat that fails on its first message.
+Because the CLI holds your account, the app never asks for your Claude
+credentials and never handles them.
+
+**Claude Code needs a Claude Pro, Max, Team or Enterprise plan.** The free plan
+does not include it; without one, put an Anthropic API key in
+**Settings → Assistant** instead.
+
+**It can only do what this app does.** The session is given the app's tools and
+nothing else — no shell, no filesystem, no web. `--allowedTools` alone would not
+achieve that: it pre-approves tools rather than restricting them, and Claude
+Code's read-only Bash commands run without a prompt *in every permission mode*.
+Two flags close it: `--tools ""` drops every built-in tool, and
+`--strict-mcp-config` ignores any MCP server configured elsewhere on the machine.
+Asked to read a file, run a command or open a URL, the agent answers that it has
+no tool for it — and it has none.
+
+**Approval — one tick per post.** Each post the agent creates appears in the
+conversation as a card with a ✓ and a ✗. Nothing reaches X until you press ✓,
+which runs exactly the same publish path as the calendar; ✗ deletes the draft.
+
+| | Manual (default) | Automatic |
+|---|---|---|
+| Write drafts, schedule, edit, delete in the app | yes | yes |
+| Publish to X, schedule inside X | only when you press ✓ | the agent may do it itself |
+| Shell, filesystem, web access | **none** | **none** |
+
+In manual mode the publish tools are not even in the agent's tool list, and the
+MCP server refuses them if called anyway — hiding a tool is a hint to the model,
+not an access control, so both are in place. Automatic mode lets the agent
+publish without asking; the cards then report what it did rather than asking you.
+
+**Media.** Give it a path and it attaches the file: images and video both work,
+with the same per-account size limits as the composer (5 MB images, 512 MB video,
+16 GB on Premium).
+
+**Which account pays.** By default, the Claude Code signed in on this machine —
+your own subscription, nothing extra to buy. Leave the key field in
+**Settings → Assistant** empty for that. Enter an Anthropic API key there instead
+and the run is billed to that API account; the key is stored in the OS credential
+store, never in a file.
+
+> Anthropic does not allow third-party apps to offer claude.ai sign-in to *their*
+> users. That is why the subscription path only works for whoever is already
+> signed in on the machine, and why the API key field exists for everyone else.
+
 ## Troubleshooting
 
 - **Sign-in failed**: use **Settings → Connect to X**. Set the browser to **Visible**
@@ -101,6 +203,15 @@ browsers at once.
   and 4 hours. The app checks the size and the duration against *your* account
   before uploading anything, then waits while X transcodes, which can take
   several minutes for a large clip.
+- **Assistant: "Claude Code is not installed"**: install it with
+  `npm install -g @anthropic-ai/claude-code`, run `claude` once to sign in, then
+  press *Check again*. A packaged app started from Explorer can also have a
+  narrower `PATH` than your terminal; the app looks in the usual npm locations too.
+- **Assistant: "the app's tools could not be loaded"**: the MCP server did not
+  start. The log has the reason — the most common one is the app's own API not
+  answering, which the assistant reports rather than guessing at an answer.
+- **Assistant refuses to publish**: that is manual approval doing its job. Switch
+  *Approval* to **Automatic** in the Assistant tab, or publish from the calendar.
 
 ## Security
 
@@ -121,6 +232,22 @@ web page you visit can also reach that address, the server:
   environment the browser inherits;
 - **stores `.env` and the saved session with owner-only permissions** where the
   filesystem supports it.
+
+The **Assistant** adds no network surface: its MCP server talks over a pipe, not a
+port, and it calls the same loopback API with the same validation as the
+interface. Three further precautions:
+
+- **it has no tools but this app's.** The session runs with `--tools ""` and
+  `--strict-mcp-config`, so it carries no shell, no file access, no web fetch and
+  no MCP server from anywhere else — only `create_post`, `list_posts` and the rest;
+- **it cannot publish unless you say so.** In manual mode the publish tools are
+  absent from its tool list, denied at the client, *and* refused by the server if
+  called anyway — hiding a tool is a hint to the model, not an access control;
+- **the Anthropic API key lives in the OS credential store**, is never written to
+  a file, and is injected into the Claude Code child process only — never into
+  this process's environment, which the browser would inherit;
+- **the agent runs in a directory the app owns**, so hooks or extra MCP servers
+  sitting in whatever project folder you happen to be in are never loaded.
 
 Uploads are checked by content, not just by file extension, capped at 5 MB, and
 stored under generated names inside `data/uploads`.
@@ -144,13 +271,15 @@ The app creates these files next to the executable:
 
 ```
 data/
-  posts.db            - SQLite database (posts + followers history)
+  posts.db            - SQLite database (posts, the X mirror, followers history)
   profile_info.json   - Cached profile information
   profile_picture.jpg - Profile picture
   preferences.json    - UI preferences (language, theme)
   session.json        - Whether the last sign-in succeeded (no credentials)
   chrome_profile/     - Browser profile, when CHROME_PROFILE_DIR is empty
   uploads/            - Uploaded images
+  agent_session.json  - Assistant conversation id, so it remembers the thread
+  agent/              - Working directory the assistant runs in (kept empty)
 logs/
   app.log             - Activity logs
 .env                  - Settings (no password: that lives in the OS credential store)
@@ -176,8 +305,14 @@ they run in a throwaway directory and never touch your real `data/` or `.env`:
 python tests/test_api.py        # API, validation, queued publishing, recovery
 python tests/test_schedule.py   # date mapping onto X's schedule dialog
 python tests/test_security.py   # cross-origin guards, secrets, uploads
+python tests/test_agent.py      # MCP protocol, the CLI bridge, publish gating
+python tests/test_timeline.py   # timeline scraping, pagination, the X mirror
 cd ui && npm run lint           # frontend lint
 ```
+
+`test_agent.py` also runs the MCP server as a real child process against a live
+local server, which is the path that ships — but it never calls a model and
+never sends a tweet.
 
 **Build executable:**
 ```bash
@@ -200,6 +335,7 @@ pyinstaller "X Post Manager.spec" --distpath dist --clean
 - **Frontend**: React, TypeScript, Vite, TailwindCSS, Recharts
 - **Desktop**: pywebview (EdgeChromium) / PyInstaller
 - **Scheduling**: APScheduler
+- **Assistant**: the Claude Code CLI, driven over MCP (stdio, standard library only)
 
 ## Versioning
 
@@ -215,4 +351,8 @@ MIT
 
 Developed by **Loic Meyer**
 
-https://buymeacoffee.com/loicmeyer
+- GitHub — [@LoicmeyerMMI](https://github.com/LoicmeyerMMI)
+- LinkedIn — [loic-meyer](https://www.linkedin.com/in/loic-meyer/)
+- This repository — [LoicMeyerFrance/X-Post-Management](https://github.com/LoicMeyerFrance/X-Post-Management)
+
+If the app saves you time: [buymeacoffee.com/loicmeyer](https://buymeacoffee.com/loicmeyer)

@@ -14,6 +14,11 @@ datas += collect_data_files('playwright_stealth')
 # ancient MSHTML engine and opens a blank white window.
 binaries = []
 hiddenimports = [
+    # The assistant's MCP server is imported behind an `if --mcp in argv` guard,
+    # so it is listed here rather than left to static analysis. Without it the
+    # frozen exe cannot serve tools to Claude Code.
+    'mcp_server',
+    'agent',
     'keyring.backends.Windows',
     'keyring.backends.macOS',
     'keyring.backends.SecretService',

@@ -279,3 +279,213 @@ export async function fetchConnectionStatus(): Promise<ConnectionStatus> {
   const res = await fetch(`${BASE}/api/settings/connection-status`)
   return handleResponse<ConnectionStatus>(res)
 }
+
+// --- The X timeline, read back from the account ---------------------------
+//
+// A read-only mirror of what is actually on X, including tweets this app never
+// sent. Separate from `Post`: there is no status and nothing to schedule here.
+
+export interface XTweet {
+  tweet_id: string
+  url: string
+  text: string
+  posted_at: string
+  is_repost: number
+  is_reply: number
+  has_photo: number
+  has_video: number
+  replies: string
+  reposts: string
+  likes: string
+  views: string
+  username: string
+  first_seen_at: string
+  fetched_at: string
+  /** The app post that produced this tweet, when there is one. */
+  app_post_id: number | null
+}
+
+export async function fetchXHistory(): Promise<{ tweets: XTweet[]; count: number; last_sync: string }> {
+  const res = await fetch(`${BASE}/api/history/x`)
+  return handleResponse<{ tweets: XTweet[]; count: number; last_sync: string }>(res)
+}
+
+export interface XSyncResult {
+  read?: number
+  added?: number
+  updated?: number
+  total?: number
+  reached_ceiling?: boolean
+  error?: string
+}
+
+/** Read the profile in the browser. Slow: it scrolls the timeline. */
+export async function syncXHistory(maxTweets?: number): Promise<XSyncResult> {
+  const res = await fetch(`${BASE}/api/history/x/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(maxTweets ? { max_tweets: maxTweets } : {}),
+  })
+  return handleResponse<XSyncResult>(res)
+}
+
+// --- Assistant ------------------------------------------------------------
+//
+// The app runs the user's own Claude Code CLI; nothing here talks to a model.
+// One turn is a POST whose body is a stream of server-sent events, so the reply
+// appears as it is written instead of after a long silence.
+
+export interface AgentStatus {
+  cli_installed: boolean
+  cli_path: string
+  cli_version: string
+  auth_mode: 'subscription' | 'api_key' | 'none'
+  has_api_key: boolean
+  /** Whether the CLI itself is signed in, read from `claude auth status`. */
+  logged_in: boolean
+  auth_known: boolean
+  plan: string
+  account_email: string
+  /** Installed *and* able to authenticate: a turn would actually run. */
+  ready: boolean
+  running: boolean
+  auto_approve: boolean
+  session_id: string
+  /** The exact install command, shown before anything is run. */
+  install_command: string
+  install_hint: string
+  can_install: boolean
+}
+
+/** Run Anthropic's official installer, so the user needs no terminal. */
+export async function installAgentCli(): Promise<{ installed: boolean; output: string; already?: boolean }> {
+  const res = await fetch(`${BASE}/api/agent/install`, { method: 'POST' })
+  const body = await res.json().catch(() => ({}))
+  // A failed install still returns a body worth showing.
+  return { installed: !!body.installed, output: body.output || '', already: body.already }
+}
+
+/** Open the Claude sign-in window. The app never handles those credentials. */
+export async function loginAgentCli(): Promise<{ started: boolean; detail: string }> {
+  const res = await fetch(`${BASE}/api/agent/login`, { method: 'POST' })
+  const body = await res.json().catch(() => ({}))
+  return { started: !!body.started, detail: body.detail || '' }
+}
+
+export async function fetchAgentStatus(): Promise<AgentStatus> {
+  const res = await fetch(`${BASE}/api/agent/status`)
+  return handleResponse<AgentStatus>(res)
+}
+
+export async function saveAgentKey(apiKey: string): Promise<{ saved: boolean; has_api_key: boolean }> {
+  const res = await fetch(`${BASE}/api/agent/key`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey }),
+  })
+  return handleResponse<{ saved: boolean; has_api_key: boolean }>(res)
+}
+
+export async function setAgentAuto(autoApprove: boolean): Promise<{ auto_approve: boolean }> {
+  const res = await fetch(`${BASE}/api/agent/auto`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auto_approve: autoApprove }),
+  })
+  return handleResponse<{ auto_approve: boolean }>(res)
+}
+
+export async function stopAgent(): Promise<{ stopped: boolean }> {
+  const res = await fetch(`${BASE}/api/agent/stop`, { method: 'POST' })
+  return handleResponse<{ stopped: boolean }>(res)
+}
+
+export async function resetAgent(): Promise<{ reset: boolean }> {
+  const res = await fetch(`${BASE}/api/agent/reset`, { method: 'POST' })
+  return handleResponse<{ reset: boolean }>(res)
+}
+
+/** One event from the CLI's stream-json output, or one of ours tagged 'xpm'. */
+export interface AgentEvent {
+  type: string
+  subtype?: string
+  session_id?: string
+  parent_tool_use_id?: string | null
+  message?: {
+    content?: Array<{
+      type: string
+      text?: string
+      name?: string
+      input?: Record<string, unknown>
+      content?: unknown
+      is_error?: boolean
+      /** On a tool_use block: the call's own id. */
+      id?: string
+      /** On a tool_result block: the id of the call it answers. */
+      tool_use_id?: string
+    }>
+  }
+  event?: { type?: string; delta?: { type?: string; text?: string } }
+  result?: string
+  error?: string
+  total_cost_usd?: number
+  num_turns?: number
+  duration_ms?: number
+  mcp_servers?: { name: string; status: string }[]
+  mcp_server_errors?: { name: string; message: string }[]
+  permission_denials?: unknown[]
+  [key: string]: unknown
+}
+
+/** Send one message and call `onEvent` for each event as it arrives.
+ *
+ *  fetch + a stream reader rather than EventSource, which cannot POST. The
+ *  AbortSignal lets the page drop the connection; /api/agent/stop ends the
+ *  process itself. */
+export async function streamAgentChat(
+  message: string,
+  onEvent: (event: AgentEvent) => void,
+  options: { newConversation?: boolean; signal?: AbortSignal } = {},
+): Promise<void> {
+  const res = await fetch(`${BASE}/api/agent/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, new_conversation: !!options.newConversation }),
+    signal: options.signal,
+  })
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    let detail = text
+    try { detail = JSON.parse(text).error || text } catch { /* keep the raw text */ }
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`)
+  }
+  if (!res.body) throw new ApiError(500, 'The server sent no stream')
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    // SSE frames are separated by a blank line; a frame may arrive in pieces,
+    // so anything after the last separator stays in the buffer.
+    const frames = buffer.split('\n\n')
+    buffer = frames.pop() ?? ''
+
+    for (const frame of frames) {
+      const line = frame.split('\n').find(l => l.startsWith('data: '))
+      if (!line) continue
+      const payload = line.slice(6)
+      if (payload === '[DONE]') return
+      try {
+        onEvent(JSON.parse(payload) as AgentEvent)
+      } catch {
+        // A frame we cannot parse is not worth killing the turn over.
+      }
+    }
+  }
+}

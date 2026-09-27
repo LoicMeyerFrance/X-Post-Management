@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import logging
@@ -535,6 +536,79 @@ def _is_logged_in(page):
     return False
 
 
+_HANDLE_JS = r"""
+() => {
+  const profile = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+  if (profile) {
+    const href = profile.getAttribute('href') || '';
+    if (href.startsWith('/')) return href.slice(1).split('/')[0];
+  }
+  // The avatar container carries the handle inside its own test id.
+  const avatar = document.querySelector('[data-testid^="UserAvatar-Container-"]');
+  if (avatar) {
+    return (avatar.getAttribute('data-testid') || '')
+      .replace('UserAvatar-Container-', '');
+  }
+  return '';
+}
+"""
+
+
+def _normalise_handle(value):
+    return str(value or '').strip().lstrip('@').lower()
+
+
+def _current_handle(page):
+    """The handle actually signed in, lowercased, or '' when unreadable.
+
+    _is_logged_in only answers "is somebody signed in". That is the wrong
+    question when the browser profile already holds another account: the app
+    would then work under one identity while reporting another.
+    """
+    try:
+        return _normalise_handle(page.evaluate(_HANDLE_JS))
+    except Exception as exc:
+        logger.debug(f"Could not read the signed-in handle: {exc}")
+        return ''
+
+
+def _sign_out(page):
+    """Drop the current X session so another account can sign in.
+
+    Cookies are cleared for X's domains only, never wholesale: CHROME_PROFILE_DIR
+    can point at the user's real Chrome profile, and clearing everything there
+    would sign them out of every site they use. Going through X's own log-out
+    menu instead would mean matching wording that changes with locale and
+    redesign, so this is the sturdier half of the trade.
+    """
+    if _context is None:
+        return False
+    cleared = False
+    for domain in ('.x.com', 'x.com', '.twitter.com', 'twitter.com'):
+        try:
+            _context.clear_cookies(domain=domain)
+            cleared = True
+        except TypeError:
+            # A Playwright too old for filtered clearing. Refuse rather than
+            # clear every cookie in what may be the user's own profile.
+            logger.warning("This Playwright cannot clear cookies per domain; "
+                           "not signing out to avoid touching other sites")
+            return False
+        except Exception as exc:
+            logger.debug(f"clear_cookies({domain}) failed: {exc}")
+    if not cleared:
+        return False
+
+    try:
+        page.goto('https://x.com/login', wait_until='domcontentloaded')
+        _human_delay(1.5, 2.5)
+        _accept_cookies(page)
+    except Exception as exc:
+        logger.warning(f"Could not reload the sign-in page after signing out: {exc}")
+        return False
+    return not _is_logged_in(page)
+
+
 def _login(page):
     """Log in to X with the stored credentials.
 
@@ -552,9 +626,26 @@ def _login(page):
     _accept_cookies(page)
 
     if _is_logged_in(page):
-        logger.info("Already logged in")
-        _mark_session(True, cfg['username'])
-        return {'success': True}
+        signed_in = _current_handle(page)
+        wanted = _normalise_handle(cfg['username'])
+        if signed_in and signed_in != wanted:
+            # The wrong account is signed in. Reusing that session would publish
+            # under the wrong identity, so sign out and fall through to the form.
+            logger.info(f"Signed in as @{signed_in}, but configured for @{wanted}; "
+                        "signing out to switch accounts")
+            if not _sign_out(page):
+                _mark_session(False, error=f'signed in as @{signed_in}')
+                return {
+                    'success': False,
+                    'needs_manual_intervention': True,
+                    'error': (f'The browser is signed in as @{signed_in}, not @{wanted}. '
+                              'Could not sign out on its own - use Connect to X with the '
+                              'browser visible and switch accounts there.'),
+                }
+        else:
+            logger.info(f"Already logged in as @{signed_in or wanted}")
+            _mark_session(True, signed_in or cfg['username'])
+            return {'success': True}
 
     # One credential submission per call. The loop only goes round again when
     # the username field was never reached (a page-load problem), never after a
@@ -1493,7 +1584,8 @@ def _do_fetch_profile():
         # Download the image using the browser context (authenticated, no 403)
         save_dir = paths.DATA_DIR
         os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, 'profile_picture.jpg')
+        save_path = os.path.join(
+            save_dir, paths.profile_picture_name(_get_config()['username']))
 
         response = page.context.request.get(avatar_url_hq)
         if response.ok:
@@ -1568,8 +1660,23 @@ def _do_connect_x():
                     break
                 if _is_logged_in(page) or '/home' in page.url:
                     cfg = _get_config()
-                    _mark_session(True, cfg['username'])
-                    logger.info("Connected to X (finished by the user)")
+                    wanted = _normalise_handle(cfg['username'])
+                    signed_in = _current_handle(page)
+                    # The user may have signed into a different account than the
+                    # one configured. Recording the configured handle then would
+                    # be a plain lie, and every later post would go elsewhere.
+                    if signed_in and wanted and signed_in != wanted:
+                        logger.warning(f"User signed in as @{signed_in}, not @{wanted}")
+                        _mark_session(False, error=f'signed in as @{signed_in}')
+                        _close_browser_internal()
+                        return {
+                            'success': False,
+                            'error': (f'Signed in as @{signed_in}, but the app is set up for '
+                                      f'@{wanted}. Either sign in as @{wanted}, or change the '
+                                      'username in Settings to @' + signed_in + '.'),
+                        }
+                    _mark_session(True, signed_in or cfg['username'])
+                    logger.info(f"Connected to X as @{signed_in or wanted} (finished by the user)")
                     _close_browser_internal()
                     return {'success': True, 'message': 'Connected to X'}
             except Exception:
@@ -1622,6 +1729,197 @@ def _tweet_state(page, tweet_url):
     except Exception as e:
         logger.warning(f"Could not check {tweet_url[-24:]}: {e}")
         return 'unknown'
+
+
+# --- reading the account's own timeline ------------------------------------
+#
+# The profile timeline is virtualised: X unmounts articles as they leave the
+# viewport, so a single read at the end would return only the last screenful.
+# Everything has to be collected as the page grows, keyed on the tweet id.
+
+_TIMELINE_JS = r"""
+() => {
+  const out = [];
+  for (const art of document.querySelectorAll('article[data-testid="tweet"]')) {
+    const timeEl = art.querySelector('time');
+    const anchor = timeEl ? timeEl.closest('a') : null;
+    const textEl = art.querySelector('div[data-testid="tweetText"]');
+    const social = art.querySelector('[data-testid="socialContext"]');
+    const group = art.querySelector('[role="group"][aria-label]');
+    const counts = {};
+    for (const name of ['reply', 'retweet', 'like', 'bookmark']) {
+      const el = art.querySelector(`[data-testid="${name}"]`);
+      if (el) counts[name] = (el.innerText || '').trim();
+    }
+    out.push({
+      href: anchor ? anchor.getAttribute('href') : null,
+      datetime: timeEl ? timeEl.getAttribute('datetime') : null,
+      text: textEl ? textEl.innerText : '',
+      socialContext: social ? (social.innerText || '').trim() : '',
+      groupLabel: group ? group.getAttribute('aria-label') : '',
+      counts: counts,
+      hasPhoto: !!art.querySelector('[data-testid="tweetPhoto"]'),
+      hasVideo: !!art.querySelector('[data-testid="videoPlayer"], video'),
+    });
+  }
+  return out;
+}
+"""
+
+# X renders a reply with this above the text. Matching on the label rather than
+# on the DOM shape because the shape changes far more often than the wording.
+_REPLY_MARKERS = ('replying to', 'en réponse à', 'en reponse a')
+
+
+# The group label is one sentence listing several metrics - "2 réponses, 1 repost,
+# 5 j'aime, 100 vues" - so the view count has to be read next to its own word.
+# Collecting every digit in the label instead would silently return "215100".
+_VIEWS_RE = re.compile(
+    r'([\d][\d\s .,]*)\s*(?:vues?|views?|Aufrufe|visualizzazioni|visualizaç)',
+    re.IGNORECASE)
+
+
+def _views_from_label(label):
+    """The view count out of an aria-label such as "1,234 views" / "12 vues"."""
+    if not label:
+        return ''
+    match = _VIEWS_RE.search(label)
+    if not match:
+        return ''
+    return ''.join(char for char in match.group(1) if char.isdigit())
+
+
+def _timeline_row(item, username=''):
+    """Map one scraped article to a database row, or None when unusable.
+
+    Kept free of Playwright so it can be tested without a browser - which is the
+    only way to test it at all, since a timeline cannot be fabricated.
+    """
+    href = (item or {}).get('href') or ''
+    if '/status/' not in href:
+        return None
+    tweet_id = href.split('/status/', 1)[1].split('/')[0].split('?')[0]
+    if not tweet_id.isdigit():
+        return None
+
+    social = (item.get('socialContext') or '').strip()
+    text = (item.get('text') or '').strip()
+    counts = item.get('counts') or {}
+
+    # A retweet's href points at the original author, so the handle in the URL is
+    # what tells us whose tweet this really is.
+    author = href.lstrip('/').split('/', 1)[0].lower()
+
+    return {
+        'tweet_id': tweet_id,
+        'url': f'https://x.com{href.split("?")[0]}',
+        'text': text,
+        'posted_at': item.get('datetime') or '',
+        'is_repost': 1 if (social and username and author != username.lower()) else 0,
+        'is_reply': 1 if any(marker in text.lower()[:60] for marker in _REPLY_MARKERS) else 0,
+        'has_photo': 1 if item.get('hasPhoto') else 0,
+        'has_video': 1 if item.get('hasVideo') else 0,
+        'replies': counts.get('reply', ''),
+        'reposts': counts.get('retweet', ''),
+        'likes': counts.get('like', ''),
+        'views': _views_from_label(item.get('groupLabel')),
+        'username': author,
+    }
+
+
+# Scrolling forever is not an option: X stops serving older tweets after a while
+# and an unbounded loop would hold the single browser worker indefinitely.
+TIMELINE_MAX_TWEETS = 800
+TIMELINE_MAX_SCROLLS = 120
+# Give up when this many consecutive scrolls bring nothing new - the end of what
+# X will serve, or a stalled load.
+TIMELINE_IDLE_LIMIT = 4
+
+
+def _scrape_timeline(page, username, max_tweets, max_scrolls, progress=None):
+    """Collect the account's tweets, scrolling until X stops adding any."""
+    collected = {}
+    idle = 0
+    for step in range(max_scrolls):
+        try:
+            batch = page.evaluate(_TIMELINE_JS) or []
+        except Exception as exc:
+            logger.warning(f"Timeline read failed at scroll {step}: {exc}")
+            break
+
+        fresh = 0
+        for item in batch:
+            row = _timeline_row(item, username)
+            if row is None or row['tweet_id'] in collected:
+                continue
+            collected[row['tweet_id']] = row
+            fresh += 1
+
+        if progress:
+            progress(len(collected), step)
+        if fresh == 0:
+            idle += 1
+            if idle >= TIMELINE_IDLE_LIMIT:
+                logger.info(f"Timeline stopped growing at {len(collected)} tweets")
+                break
+        else:
+            idle = 0
+
+        if len(collected) >= max_tweets:
+            logger.info(f"Reached the {max_tweets} tweet ceiling")
+            break
+
+        page.evaluate('window.scrollBy(0, window.innerHeight * 2.5)')
+        page.wait_for_timeout(1400)
+
+    # A whole screenful is absorbed per round, so the ceiling can be overshot.
+    # Sorting before the cut makes max_tweets mean "the most recent N", which is
+    # what it reads as - insertion order would not, because a pinned tweet comes
+    # first however old it is.
+    rows = sorted(collected.values(), key=lambda row: row.get('posted_at') or '',
+                  reverse=True)
+    return rows[:max_tweets]
+
+
+def _do_fetch_timeline(max_tweets=TIMELINE_MAX_TWEETS, max_scrolls=TIMELINE_MAX_SCROLLS):
+    """Read the account's own posts from its X profile. Runs in worker thread."""
+    try:
+        page = _ensure_browser()
+        login_result = _login(page)
+        if not login_result.get('success'):
+            _close_if_visible()
+            return login_result
+
+        username = _get_config()['username']
+        if not username:
+            _close_if_visible()
+            return {'success': False, 'error': 'No X username configured'}
+
+        url = f'https://x.com/{username}'
+        logger.info(f"Reading the timeline at {url}")
+        page.goto(url, wait_until='domcontentloaded', timeout=45000)
+        if not _wait(page, 'article[data-testid="tweet"]', timeout=20000):
+            _close_if_visible()
+            body = (page.inner_text('body') or '').lower()
+            if 'protected' in body or 'protég' in body:
+                return {'success': False, 'error': 'This account is protected.'}
+            # An account with nothing on it is a success with nothing to show.
+            logger.info("No tweets found on the profile")
+            return {'success': True, 'tweets': [], 'empty': True}
+        _dismiss_popups(page)
+
+        def log_progress(total, step):
+            if step and step % 10 == 0:
+                logger.info(f"  {total} tweets after {step} scrolls")
+
+        rows = _scrape_timeline(page, username, max_tweets, max_scrolls, log_progress)
+        _close_if_visible()
+        logger.info(f"Timeline read: {len(rows)} tweets")
+        return {'success': True, 'tweets': rows}
+    except Exception as exc:
+        logger.error(f"fetch_timeline error: {exc}")
+        _close_if_visible()
+        return {'success': False, 'error': str(exc)}
 
 
 def _do_check_tweets(tweet_urls):
@@ -2000,6 +2298,14 @@ def restart_browser():
 def delete_tweet(tweet_url):
     """Delete a tweet from X. Returns dict with success, error keys."""
     return _run_in_worker(_do_delete_tweet, tweet_url)
+
+
+def fetch_timeline(max_tweets=TIMELINE_MAX_TWEETS, max_scrolls=TIMELINE_MAX_SCROLLS):
+    """Read the account's own posts from X. Returns dict with success, tweets."""
+    # A scroll costs about 1.4s plus the render; allow for the sign-in check and
+    # a slow timeline rather than cutting a long history short.
+    timeout = 120 + 3 * max_scrolls
+    return _run_in_worker(_do_fetch_timeline, max_tweets, max_scrolls, timeout=timeout)
 
 
 def check_tweets(tweet_urls):

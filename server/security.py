@@ -52,6 +52,11 @@ def _hostname(value):
     return value.rsplit(':', 1)[0].lower() if ':' in value else value.lower()
 
 
+def is_loopback_host(value):
+    """True when a Host header or an Origin URL points at this machine."""
+    return is_loopback(_hostname(value))
+
+
 def is_loopback(hostname):
     if not hostname:
         return False

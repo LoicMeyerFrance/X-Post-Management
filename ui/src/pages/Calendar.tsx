@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, X, Eye, EyeOff, ExternalLink } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
 import { PostItem } from '@/components/PostItem'
@@ -10,7 +10,7 @@ import { useSettings } from '@/contexts/SettingsContext'
 import { MONTHS_LONG, DAYS_LONG } from '@/lib/i18n'
 import * as api from '@/lib/api'
 import type { Post } from '@/lib/api'
-import { toastResult, outcomeOf , isVideoFile } from '@/lib/utils'
+import { toastResult, outcomeOf , isVideoFile, localDateKey } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
 const statusDotColors: Record<string, string> = {
@@ -33,6 +33,10 @@ export function Calendar() {
   const [editingPost, setEditingPost] = useState<Post | null>(null)
   const [previewId, setPreviewId] = useState<number | null>(null)
   const [profile, setProfile] = useState<api.Profile | null>(null)
+  // Tweets read back from X that this app never sent. Off by default: a long
+  // history would bury the posts the user actually manages here.
+  const [xTweets, setXTweets] = useState<api.XTweet[]>([])
+  const [showFromX, setShowFromX] = useState(false)
   const charLimit = profile?.is_verified ? 25000 : 280
 
   const localeCode = locale === 'fr' ? 'fr-FR' : 'en-US'
@@ -57,6 +61,33 @@ export function Calendar() {
     } catch { /* ignore */ }
   }, [])
 
+  const loadXTweets = useCallback(async () => {
+    try {
+      const data = await api.fetchXHistory()
+      setXTweets(data.tweets)
+    } catch { /* the calendar still works without the mirror */ }
+  }, [])
+
+  // The preference lives on the server: localStorage does not survive pywebview.
+  // Restoring it and fetching the mirror is one chain, so the state only changes
+  // once the data is in hand.
+  useEffect(() => {
+    api.fetchPreferences()
+      .then(async prefs => {
+        if (prefs.calendarShowFromX !== 'true') return
+        await loadXTweets()
+        setShowFromX(true)
+      })
+      .catch(() => {})
+  }, [loadXTweets])
+
+  const toggleFromX = async () => {
+    const next = !showFromX
+    if (next && xTweets.length === 0) await loadXTweets()
+    setShowFromX(next)
+    api.savePreferences({ calendarShowFromX: next ? 'true' : 'false' }).catch(() => {})
+  }
+
   // load() is async: setPosts runs after the fetch resolves, never during the
   // effect body.
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -78,20 +109,36 @@ export function Calendar() {
   const postsByDate: Record<string, Post[]> = {}
   posts.forEach(p => {
     let d: string | null = null
-    if (p.status === 'posted' && p.posted_at) d = p.posted_at.slice(0, 10)
-    else if ((p.status === 'scheduled' || p.status === 'scheduled_on_x' || p.status === 'scheduling') && p.scheduled_at) d = p.scheduled_at.slice(0, 10)
-    else if (p.status === 'error' && p.scheduled_at) d = p.scheduled_at.slice(0, 10)
-    else if (p.status === 'draft' && p.created_at) d = p.created_at.slice(0, 10)
+    if (p.status === 'posted' && p.posted_at) d = localDateKey(p.posted_at)
+    else if ((p.status === 'scheduled' || p.status === 'scheduled_on_x' || p.status === 'scheduling') && p.scheduled_at) d = localDateKey(p.scheduled_at)
+    else if (p.status === 'error' && p.scheduled_at) d = localDateKey(p.scheduled_at)
+    else if (p.status === 'draft' && p.created_at) d = localDateKey(p.created_at)
     if (d) {
       if (!postsByDate[d]) postsByDate[d] = []
       postsByDate[d].push(p)
     }
   })
 
+  // Only tweets this app did not send. One sent from here already has a row in
+  // `posts`, and app_post_id is what pairs them - showing both would count the
+  // same tweet twice on the same day.
+  const foreignByDate: Record<string, api.XTweet[]> = {}
+  if (showFromX) {
+    xTweets.forEach(tweet => {
+      if (tweet.app_post_id) return
+      const d = localDateKey(tweet.posted_at)
+      if (!d) return
+      if (!foreignByDate[d]) foreignByDate[d] = []
+      foreignByDate[d].push(tweet)
+    })
+  }
+  const foreignCount = Object.values(foreignByDate).reduce((n, list) => n + list.length, 0)
+
   // Derived, not stored: snapshots here went stale the moment a post was deleted
   // or published, leaving a row that only disappeared on page change. The
   // preview follows the same rule, so it closes on its own when its post goes.
   const selectedPosts = selectedDate ? postsByDate[selectedDate] || [] : []
+  const selectedForeign = selectedDate ? foreignByDate[selectedDate] || [] : []
   const previewPost = previewId !== null ? posts.find(p => p.id === previewId) ?? null : null
 
   const firstDay = new Date(year, month, 1).getDay()
@@ -191,9 +238,27 @@ export function Calendar() {
           <ChevronLeft size={20} className="text-text-secondary" />
         </button>
         <h3 className="text-sm font-semibold text-text capitalize">{MONTHS_LONG[locale][month]} {year}</h3>
-        <button onClick={next} className="p-2 rounded-md hover:bg-bg-hover transition-colors">
-          <ChevronRight size={20} className="text-text-secondary" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleFromX}
+            title={t('calendar.fromXHint')}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-colors',
+              showFromX
+                ? 'border-text-muted/40 bg-bg-secondary text-text-secondary'
+                : 'border-border text-text-muted hover:bg-bg-hover'
+            )}
+          >
+            {showFromX ? <Eye size={12} /> : <EyeOff size={12} />}
+            {t('calendar.fromX')}
+            {showFromX && foreignCount > 0 && (
+              <span className="font-mono">{foreignCount}</span>
+            )}
+          </button>
+          <button onClick={next} className="p-2 rounded-md hover:bg-bg-hover transition-colors">
+            <ChevronRight size={20} className="text-text-secondary" />
+          </button>
+        </div>
       </div>
 
       {/* Legend */}
@@ -202,6 +267,11 @@ export function Calendar() {
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-accent" /> {t('calendar.scheduled')}</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-border" /> {t('calendar.draft')}</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-error" /> {t('calendar.error')}</span>
+        {showFromX && (
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full border border-text-muted" /> {t('calendar.fromXLegend')}
+          </span>
+        )}
       </div>
 
       {/* Calendar grid */}
@@ -217,15 +287,17 @@ export function Calendar() {
           }
           const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
           const dayPosts = postsByDate[dateStr] || []
+          const dayForeign = foreignByDate[dateStr] || []
+          const hasSomething = dayPosts.length > 0 || dayForeign.length > 0
           const isToday = dateStr === todayStr
           const isSelected = dateStr === selectedDate
           return (
             <div
               key={dateStr}
-              onClick={() => dayPosts.length > 0 && selectDay(day)}
+              onClick={() => hasSomething && selectDay(day)}
               className={cn(
                 'min-h-[90px] p-2 border-b border-r border-border transition-colors relative',
-                dayPosts.length > 0 && 'cursor-pointer hover:bg-accent-light/50 bg-bg-secondary/30',
+                hasSomething && 'cursor-pointer hover:bg-accent-light/50 bg-bg-secondary/30',
                 isSelected && 'bg-accent-light/70 ring-1 ring-inset ring-accent/30',
                 i % 7 === 6 && 'border-r-0'
               )}
@@ -237,14 +309,30 @@ export function Calendar() {
               )}>
                 {day}
               </span>
-              {dayPosts.length > 0 && (
+              {hasSomething && (
                 <div className="flex flex-wrap gap-1 mt-1.5">
                   {dayPosts.slice(0, 4).map(p => (
                     <span key={p.id} className={cn('w-2 h-2 rounded-full', statusDotColors[p.status])} />
                   ))}
-                  {dayPosts.length > 4 && (
-                    <span className="text-[10px] text-text-muted font-medium">+{dayPosts.length - 4}</span>
+                  {/* Hollow: read back from X, not sent from here. */}
+                  {dayForeign.slice(0, 4).map(tw => (
+                    <span key={tw.tweet_id}
+                          className="w-2 h-2 rounded-full border border-text-muted" />
+                  ))}
+                  {dayPosts.length + dayForeign.length > 4 && (
+                    <span className="text-[10px] text-text-muted font-medium">
+                      +{dayPosts.length + dayForeign.length - 4}
+                    </span>
                   )}
+                </div>
+              )}
+              {dayPosts.length === 0 && dayForeign.length > 0 && (
+                <div className="mt-1 space-y-0.5">
+                  {dayForeign.slice(0, 2).map(tw => (
+                    <p key={tw.tweet_id} className="text-[10px] text-text-muted/80 truncate leading-tight italic">
+                      {tw.text?.substring(0, 30) || t('calendar.media')}
+                    </p>
+                  ))}
                 </div>
               )}
               {dayPosts.length > 0 && (
@@ -262,7 +350,7 @@ export function Calendar() {
       </div>
 
       {/* Detail section */}
-      {selectedDate && selectedPosts.length > 0 && (
+      {selectedDate && (selectedPosts.length > 0 || selectedForeign.length > 0) && (
         <div className="border-t border-border">
           <div className="px-6 py-3 bg-bg-secondary border-b border-border">
             <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider capitalize">
@@ -284,6 +372,29 @@ export function Calendar() {
               onDelete={id => handleAction('delete', id)}
               onDeleteFromX={id => handleAction('delete-from-x', id)}
             />
+          ))}
+          {/* Read-only: these were not sent from here, so there is nothing to
+              edit, reschedule or retry. The link goes to the tweet itself. */}
+          {selectedForeign.map(tw => (
+            <div key={tw.tweet_id}
+                 className="flex items-start gap-3 border-b border-border px-6 py-3 last:border-b-0">
+              <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full border border-text-muted" />
+              <div className="min-w-0 flex-1">
+                <div className="mb-0.5 flex items-center gap-2 text-[11px] text-text-muted">
+                  <span>{tw.posted_at ? new Date(tw.posted_at).toLocaleTimeString(localeCode, { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                  <span className="rounded-full bg-bg-secondary px-2 py-0.5">{t('history.elsewhere')}</span>
+                  {tw.views && <span>{tw.views} {t('history.views')}</span>}
+                </div>
+                <p className="truncate text-[13px] text-text-secondary">
+                  {tw.text || t('calendar.media')}
+                </p>
+              </div>
+              <a href={tw.url} target="_blank" rel="noopener noreferrer"
+                 title={t('history.viewOnX')}
+                 className="mt-1 text-text-muted transition-colors hover:text-accent">
+                <ExternalLink size={13} />
+              </a>
+            </div>
           ))}
         </div>
       )}
