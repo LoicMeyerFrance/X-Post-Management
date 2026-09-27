@@ -116,6 +116,7 @@ export function Settings() {
   }
 
   const [connectingX, setConnectingX] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const handleConnectX = async () => {
     setConnectingX(true)
@@ -249,10 +250,12 @@ C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`}</pre>
             </div>
             {[
               { key: 'X_PASSWORD', label: t('settings.labelPassword'), type: 'password', detect: false },
-              { key: 'CHROME_PROFILE_DIR', label: t('settings.labelChromeProfile'), type: 'text', detect: true },
-              { key: 'CHROME_PATH', label: t('settings.labelChromePath'), type: 'text', detect: true },
               { key: 'CHECK_INTERVAL_SECONDS', label: t('settings.labelCheckInterval'), type: 'text', detect: false },
               { key: 'MAX_RETRIES', label: t('settings.labelMaxRetries'), type: 'text', detect: false },
+              ...(showAdvanced ? [
+                { key: 'CHROME_PROFILE_DIR', label: t('settings.labelChromeProfile'), type: 'text', detect: true },
+                { key: 'CHROME_PATH', label: t('settings.labelChromePath'), type: 'text', detect: true },
+              ] : []),
             ].map(field => (
               <div key={field.key} className="flex items-center gap-3">
                 <label className="w-52 shrink-0 text-xs font-medium text-text">{field.label}</label>
@@ -287,6 +290,21 @@ C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`}</pre>
                 )}
               </div>
             ))}
+            {/* Advanced: forcing a specific Chrome is almost never needed */}
+            <div className="flex items-center gap-3">
+              <span className="w-52 shrink-0" />
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(v => !v)}
+                className="text-[11px] text-text-muted hover:text-text underline underline-offset-2"
+              >
+                {showAdvanced ? '- ' : '+ '}{t('settings.advanced')}
+              </button>
+              {!showAdvanced && (
+                <span className="text-[11px] text-text-muted/70">{t('settings.advancedHint')}</span>
+              )}
+            </div>
+
             {/* Connect to X */}
             <div className="flex items-center gap-3">
               <label className="w-52 shrink-0 text-xs font-medium text-text">{t('settings.connectX')}</label>
@@ -333,10 +351,10 @@ C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`}</pre>
                 {[
                   { label: t('settings.labelUsername'), value: '***' },
                   { label: t('settings.labelPassword'), value: '********' },
-                  { label: t('settings.labelChromeProfile'), value: '...' },
-                  { label: t('settings.labelChromePath'), value: '...' },
                   { label: t('settings.labelCheckInterval'), value: envValues['CHECK_INTERVAL_SECONDS'] ? envValues['CHECK_INTERVAL_SECONDS'] + 's' : '15s' },
                   { label: t('settings.labelMaxRetries'), value: envValues['MAX_RETRIES'] || '1' },
+                  { label: t('settings.labelChromeProfile'), value: envValues['CHROME_PROFILE_DIR'] || t('settings.automatic') },
+                  { label: t('settings.labelChromePath'), value: envValues['CHROME_PATH'] || t('settings.automatic') },
                 ].map(row => (
                   <tr key={row.label} className="border-b border-border last:border-0">
                     <td className="py-2.5 pr-4 text-xs font-medium text-text w-52">{row.label}</td>
