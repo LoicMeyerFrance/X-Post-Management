@@ -160,7 +160,7 @@ export function Profile() {
       {/* Growth chart */}
       <div className="px-6 py-5 border-b border-border">
         <h3 className="text-sm font-semibold text-text mb-4">{t('profile.growth')}</h3>
-        {chartData.length > 0 ? (
+        {chartData.length >= 2 ? (
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData}>
@@ -194,7 +194,9 @@ export function Profile() {
             </ResponsiveContainer>
           </div>
         ) : (
-          <p className="text-sm text-text-muted py-8 text-center">{t('profile.noData')}</p>
+          <p className="text-sm text-text-muted py-8 text-center">
+            {chartData.length === 1 ? t('profile.needMoreData') : t('profile.noData')}
+          </p>
         )}
       </div>
 

@@ -11,12 +11,13 @@ __pycache__/
 ui/node_modules/
 ui/dist/
 
-# Tauri build
-ui/src-tauri/target/
+# Bundled Playwright browsers (created by the build)
+pw-browsers/
 
 # Misc
 *.log
 cookies.json
 state.json
+*.env.tmp
 nul
 .claude/

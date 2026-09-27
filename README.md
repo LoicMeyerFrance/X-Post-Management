@@ -42,11 +42,17 @@ Configuration is stored in a `.env` file (created automatically by the Setup Wiz
 |-----|-------------|---------|
 | `X_USERNAME` | Your X username (without @) | |
 | `X_PASSWORD` | Your X password | |
-| `CHROME_PROFILE_DIR` | Path to Chrome profile directory | empty (uses temp) |
-| `CHROME_PATH` | Path to Chrome executable | empty (uses Playwright Chromium) |
+| `CHROME_PROFILE_DIR` | Path to Chrome profile directory | empty (uses `data/chrome_profile`) |
+| `CHROME_PATH` | Path to Chrome executable | empty (uses the bundled Chromium) |
 | `HEADLESS` | `true` for invisible browser, `false` to see it | `true` |
-| `CHECK_INTERVAL_SECONDS` | Check frequency for scheduled posts (seconds) | `15` |
-| `MAX_RETRIES` | Number of retries on failure | `1` |
+| `CHECK_INTERVAL_SECONDS` | Check frequency for scheduled posts (5-3600) | `15` |
+| `MAX_RETRIES` | Number of retries on failure (0-10) | `1` |
+| `PORT` | Port of the local server (falls back automatically if busy) | `5000` |
+| `XPM_HOME` | Where `data/`, `logs/` and `.env` live | next to the executable |
+
+Values are validated when saved: a bad username, an out-of-range interval or a
+non-numeric retry count is rejected with a clear message instead of failing
+later. Quotes, spaces and backslashes in your password are preserved exactly.
 
 ## Troubleshooting
 
@@ -57,7 +63,27 @@ Configuration is stored in a `.env` file (created automatically by the Setup Wiz
 
 ## Security
 
-All your data (credentials, posts, images) is stored locally on your computer. Nothing is sent to external servers - only X receives your posts.
+Everything (credentials, posts, images, session cookies) stays on your computer.
+The only network destination is X itself - the interface bundles its own fonts
+and assets, so the app makes no third-party requests and works offline.
+
+The app serves its interface from a small web server on `127.0.0.1`. Because any
+web page you visit can also reach that address, the server:
+
+- **rejects cross-origin requests** (`Origin`, `Referer` and `Sec-Fetch-Site` are
+  checked), so no website can publish, read or delete your posts behind your back;
+- **rejects requests with a foreign `Host` header**, which blocks DNS rebinding;
+- **sends a strict Content-Security-Policy** and never sets a wildcard CORS header;
+- **never returns your password** to the interface - it is masked as `********`;
+- **stores `.env` and the saved session with owner-only permissions** where the
+  filesystem supports it.
+
+Uploads are checked by content, not just by file extension, capped at 5 MB, and
+stored under generated names inside `data/uploads`.
+
+Two things to keep in mind: your X password is stored in clear text in `.env`
+(the browser automation needs to type it), and anyone with access to your user
+account on this machine can read `data/`. Keep both private.
 
 ## Files Created
 
@@ -69,6 +95,8 @@ data/
   profile_info.json   - Cached profile information
   profile_picture.jpg - Profile picture
   preferences.json    - UI preferences (language, theme)
+  state.json          - Saved X/Google session (cookies)
+  chrome_profile/     - Browser profile, when CHROME_PROFILE_DIR is empty
   uploads/            - Uploaded images
 logs/
   app.log             - Activity logs
@@ -89,11 +117,26 @@ cd ui && npm install && npm run build && cd ..
 python server/app.py
 ```
 
+**Tests and checks:**
+```bash
+python tests/test_api.py      # API, validation and security checks (no browser, no account)
+cd ui && npm run lint         # frontend lint
+```
+
 **Build executable:**
 ```bash
+# Bundling the browser makes the app work on machines without Chrome
+PLAYWRIGHT_BROWSERS_PATH=pw-browsers playwright install chromium
 cd ui && npm run build && cd ..
 pyinstaller "X Post Manager.spec" --distpath dist --clean
 ```
+
+## Troubleshooting (development)
+
+- **Port 5000 busy**: the server picks a free port automatically and logs it.
+  Set `PORT` to pin a specific one.
+- **A browser action hangs**: every browser operation times out (5 min) and
+  reports an error rather than leaving the request stuck.
 
 ## Tech Stack
 

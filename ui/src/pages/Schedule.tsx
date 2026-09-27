@@ -7,7 +7,7 @@ import { useConfirm } from '@/components/ConfirmModal'
 import { useSettings } from '@/contexts/SettingsContext'
 import * as api from '@/lib/api'
 import type { Post } from '@/lib/api'
-import { formatDate, timeFromNow, cn } from '@/lib/utils'
+import { timeFromNow, cn, toastResult, outcomeOf } from '@/lib/utils'
 import type { TranslationKey } from '@/lib/i18n'
 
 const statusKeys: Record<Post['status'], TranslationKey> = {
@@ -20,6 +20,9 @@ const statusKeys: Record<Post['status'], TranslationKey> = {
   error: 'status.error',
 }
 
+// Display order of the pipeline on this page.
+const PIPELINE_STATUSES: Post['status'][] = ['posting', 'scheduling', 'scheduled', 'scheduled_on_x']
+
 export function Schedule() {
   const { t, locale } = useSettings()
   const confirm = useConfirm()
@@ -31,13 +34,11 @@ export function Schedule() {
 
   const load = useCallback(async () => {
     try {
-      const [scheduled, scheduling, scheduledOnX, posting] = await Promise.all([
-        api.fetchPosts('scheduled'),
-        api.fetchPosts('scheduling'),
-        api.fetchPosts('scheduled_on_x'),
-        api.fetchPosts('posting'),
-      ])
-      setPosts([...posting, ...scheduling, ...scheduled, ...scheduledOnX])
+      // One request for all four statuses, then ordered the way the page shows
+      // them: in-flight first, then waiting, then already handed to X.
+      const all = await api.fetchPosts(PIPELINE_STATUSES)
+      const rank = (p: Post) => PIPELINE_STATUSES.indexOf(p.status)
+      setPosts([...all].sort((a, b) => rank(a) - rank(b)))
     } catch {
       toast.error(t('common.loadingError'))
     } finally {
@@ -64,8 +65,12 @@ export function Schedule() {
       if (action === 'post-now') {
         if (!await confirm({ message: t('composer.confirmPublish') })) return
         toast.info(t('composer.publishing'))
-        const r = await api.postNow(id)
-        r.success ? toast.success(t('post.published')) : toast.error(`${t('common.errorPrefix')} : ${r.error}`)
+        await api.postNow(id)
+        // The page already polls, so the row updates on its own meanwhile.
+        api.waitForPost(id)
+          .then(post => toastResult(outcomeOf(post, 'posted'), t('post.published'), t))
+          .catch(() => toast.error(t('common.serverError')))
+          .finally(() => load())
       } else if (action === 'duplicate') {
         await api.duplicatePost(id)
         toast.success(t('composer.duplicated'))
@@ -77,7 +82,7 @@ export function Schedule() {
         if (!await confirm({ message: t('schedule.confirmDeleteFromX'), danger: true })) return
         toast.info(t('schedule.deletingFromX'))
         const r = await api.deleteScheduledFromX(id)
-        r.success ? toast.success(t('schedule.deletedFromX')) : toast.error(`${t('common.errorPrefix')} : ${r.error}`)
+        toastResult(r, t('schedule.deletedFromX'), t)
       } else if (action === 'delete') {
         if (!await confirm({ message: t('composer.confirmDelete'), danger: true })) return
         await api.deletePost(id)

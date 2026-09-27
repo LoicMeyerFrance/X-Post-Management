@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { Toaster } from 'sonner'
 import { SettingsProvider, useSettings } from './contexts/SettingsContext'
 import { ComposerProvider } from './contexts/ComposerContext'
@@ -11,18 +11,29 @@ import { Calendar } from './pages/Calendar'
 import { History } from './pages/History'
 import { Logs } from './pages/Logs'
 import { Settings } from './pages/Settings'
-import { Profile } from './pages/Profile'
 import { About } from './pages/About'
 import { Loader2, Coffee } from 'lucide-react'
 import * as api from './lib/api'
+
+// Profile is the only page pulling in the charting library: load it on demand
+// so it stays out of the bundle the app parses at startup.
+const Profile = lazy(() => import('./pages/Profile').then(m => ({ default: m.Profile })))
 
 const BMC_URL = 'https://buymeacoffee.com/loicmeyer'
 
 type Page = 'composer' | 'schedule' | 'calendar' | 'history' | 'logs' | 'settings' | 'profile' | 'about'
 
+function PageLoader() {
+  return (
+    <div className="flex h-full items-center justify-center">
+      <Loader2 size={20} className="animate-spin text-text-muted" />
+    </div>
+  )
+}
+
 function AppContent() {
   const [page, setPage] = useState<Page>('composer')
-  const { configured, recheckConfig, recheckGoogle } = useSettings()
+  const { configured, recheckConfig, recheckConnection } = useSettings()
   const [setupComplete, setSetupComplete] = useState<boolean | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
 
@@ -35,9 +46,12 @@ function AppContent() {
     })
   }, [])
 
-  // Force to settings page when not configured and setup is done
+  // Force the settings page once, when the config turns out to be invalid.
+  // This is a one-shot redirect, not derived state: the user may navigate away
+  // again afterwards, so it cannot be computed during render.
   useEffect(() => {
     if (configured === false && setupComplete === true) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPage('settings')
     }
   }, [configured, setupComplete])
@@ -60,7 +74,7 @@ function AppContent() {
     // Persist to server so it survives pywebview restarts
     api.savePreferences({ setupComplete: 'true' }).catch(() => {})
     // Refresh app state after wizard completes
-    await Promise.all([recheckConfig(), recheckGoogle()])
+    await Promise.all([recheckConfig(), recheckConnection()])
     // Force remount of pages so Composer refreshes
     setPage('composer')
     setRefreshKey(k => k + 1)
@@ -86,7 +100,7 @@ function AppContent() {
 
       <Sidebar activePage={page} onNavigate={handleNavigate} />
       <main key={refreshKey} className="flex-1 overflow-y-auto">
-        {renderPage()}
+        <Suspense fallback={<PageLoader />}>{renderPage()}</Suspense>
       </main>
       {/* Buy me a coffee */}
       <a

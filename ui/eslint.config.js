@@ -19,5 +19,13 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Each provider ships with its own consumer hook. That is the intended
+      // shape here, and Fast Refresh handles it fine.
+      'react-refresh/only-export-components': [
+        'warn',
+        { allowExportNames: ['useComposer', 'useSettings', 'useConfirm'] },
+      ],
+    },
   },
 ])

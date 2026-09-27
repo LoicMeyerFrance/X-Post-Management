@@ -12,9 +12,9 @@ interface SettingsState {
   t: (key: TranslationKey) => string
   configured: boolean | null
   recheckConfig: () => Promise<void>
-  googleConnected: boolean | null
-  checkingGoogle: boolean
-  recheckGoogle: () => Promise<void>
+  xConnected: boolean | null
+  checkingConnection: boolean
+  recheckConnection: () => Promise<void>
 }
 
 const SettingsContext = createContext<SettingsState | null>(null)
@@ -66,31 +66,31 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const [googleConnected, setGoogleConnected] = useState<boolean | null>(null)
-  const [checkingGoogle, setCheckingGoogle] = useState(false)
+  const [xConnected, setXConnected] = useState<boolean | null>(null)
+  const [checkingConnection, setCheckingConnection] = useState(false)
 
-  const recheckGoogle = useCallback(async () => {
-    setCheckingGoogle(true)
+  const recheckConnection = useCallback(async () => {
+    setCheckingConnection(true)
     try {
-      const result = await api.checkGoogleConnected()
-      setGoogleConnected(result.connected)
+      const result = await api.fetchConnectionStatus()
+      setXConnected(result.connected)
     } catch {
-      setGoogleConnected(null)
+      setXConnected(null)
     } finally {
-      setCheckingGoogle(false)
+      setCheckingConnection(false)
     }
   }, [])
 
-  // Check config + Google status on mount + periodic config recheck every 30s
+  // Check config + connection state on mount, then re-check config every 30s
   useEffect(() => {
     recheckConfig()
-    recheckGoogle()
+    recheckConnection()
     const interval = setInterval(recheckConfig, 30000)
     return () => clearInterval(interval)
-  }, [recheckConfig, recheckGoogle])
+  }, [recheckConfig, recheckConnection])
 
   return (
-    <SettingsContext.Provider value={{ locale, setLocale, theme, setTheme, t, configured, recheckConfig, googleConnected, checkingGoogle, recheckGoogle }}>
+    <SettingsContext.Provider value={{ locale, setLocale, theme, setTheme, t, configured, recheckConfig, xConnected, checkingConnection, recheckConnection }}>
       {children}
     </SettingsContext.Provider>
   )

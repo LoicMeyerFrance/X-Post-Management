@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
-import { Loader2, ArrowRight, Lock, Chrome, CheckCircle2, User, Globe } from 'lucide-react'
+import { useState } from 'react'
+import { Loader2, ArrowRight, Lock, LogIn, CheckCircle2, User, Globe, AlertCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSettings } from '@/contexts/SettingsContext'
 import * as api from '@/lib/api'
@@ -8,42 +8,25 @@ interface SetupWizardProps {
   onComplete: () => void
 }
 
-const STEP_KEYS = ['setup.stepWelcome', 'setup.stepCredentials', 'setup.stepGoogle', 'setup.stepProfile'] as const
+const STEP_KEYS = ['setup.stepWelcome', 'setup.stepCredentials', 'setup.stepConnect', 'setup.stepProfile'] as const
 
 export function SetupWizard({ onComplete }: SetupWizardProps) {
-  const { t, locale, setLocale, configured, recheckConfig, googleConnected, checkingGoogle, recheckGoogle } = useSettings()
+  const { t, locale, setLocale, configured, recheckConfig, xConnected, recheckConnection } = useSettings()
 
-  const [step, setStep] = useState(1)
+  // App shows a spinner until `configured` resolves, so the right starting step
+  // is known during the first render - no effect needed to jump ahead.
+  const [step, setStep] = useState(() => {
+    if (configured !== true) return 1
+    return xConnected === true ? 4 : 3
+  })
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [savingCredentials, setSavingCredentials] = useState(false)
-  const [connectingGoogle, setConnectingGoogle] = useState(false)
+  const [connecting, setConnecting] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const [rateLimited, setRateLimited] = useState(false)
   const [fetchingProfile, setFetchingProfile] = useState(false)
   const [profileResult, setProfileResult] = useState<{ display_name: string; username: string } | null>(null)
-
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // Auto-advance: if credentials already saved, skip step 2
-  useEffect(() => {
-    if (step === 1 && configured === true) {
-      setStep(googleConnected === true ? 4 : 3)
-    }
-  }, [])
-
-  // Poll Google connection status while on step 3
-  useEffect(() => {
-    if (step === 3 && googleConnected !== true) {
-      pollRef.current = setInterval(() => {
-        recheckGoogle()
-      }, 3000)
-    }
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
-    }
-  }, [step, googleConnected, recheckGoogle])
 
   const handleSaveCredentials = async () => {
     if (!username.trim() || !password.trim()) {
@@ -69,18 +52,24 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     }
   }
 
-  const handleConnectGoogle = async () => {
-    setConnectingGoogle(true)
+  const handleConnect = async () => {
+    setConnecting(true)
+    setConnectError(null)
+    setRateLimited(false)
     try {
-      const result = await api.connectGoogle()
-      if (!result.success) {
-        toast.error(result.error || t('settings.errorUnknown'))
+      const result = await api.connectX()
+      if (result.success) {
+        toast.success(t('setup.connected'))
+        await recheckConnection()
+        setStep(4)
+      } else {
+        setConnectError(result.error || t('settings.errorUnknown'))
+        setRateLimited(!!result.rate_limited)
       }
-      await recheckGoogle()
     } catch {
-      toast.error(t('common.serverError'))
+      setConnectError(t('common.serverError'))
     } finally {
-      setConnectingGoogle(false)
+      setConnecting(false)
     }
   }
 
@@ -245,42 +234,55 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
             </div>
           )}
 
-          {/* Step 3: Google Connection (mandatory) */}
+          {/* Step 3: Connect to X */}
           {step === 3 && (
             <div className="text-center">
-              <h2 className="text-lg font-bold text-text mb-1">{t('setup.googleTitle')}</h2>
-              <p className="text-sm text-text-muted mb-2">{t('setup.googleDesc')}</p>
-              <p className="text-xs text-text-muted/70 mb-6">{t('setup.googleNote')}</p>
+              <h2 className="text-lg font-bold text-text mb-1">{t('setup.connectTitle')}</h2>
+              <p className="text-sm text-text-muted mb-2">{t('setup.connectDesc')}</p>
+              <p className="text-xs text-text-muted/70 mb-6">{t('setup.connectNote')}</p>
 
-              {googleConnected === true ? (
+              {xConnected === true ? (
                 <div className="flex flex-col items-center gap-3 mb-6">
                   <div className="w-12 h-12 rounded-full bg-green-100 dark:bg-green-950/30 flex items-center justify-center">
                     <CheckCircle2 size={24} className="text-green-600 dark:text-green-400" />
                   </div>
-                  <span className="text-sm font-medium text-green-700 dark:text-green-400">{t('setup.googleConnected')}</span>
+                  <span className="text-sm font-medium text-green-700 dark:text-green-400">{t('setup.connected')}</span>
                 </div>
               ) : (
                 <div className="flex flex-col items-center gap-3 mb-6">
                   <button
-                    onClick={handleConnectGoogle}
-                    disabled={connectingGoogle || checkingGoogle}
+                    onClick={handleConnect}
+                    disabled={connecting}
                     className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium border-2 border-border rounded-lg hover:bg-bg-hover transition-colors disabled:opacity-50"
                   >
-                    {connectingGoogle || checkingGoogle ? (
-                      <Loader2 size={16} className="animate-spin" />
-                    ) : (
-                      <Chrome size={16} />
-                    )}
-                    {t('setup.googleBtn')}
+                    {connecting ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
+                    {connecting ? t('setup.connecting') : t('setup.connectBtn')}
                   </button>
-                  <span className="text-xs text-text-muted animate-pulse">{t('setup.googleWaiting')}</span>
+
+                  {connecting && (
+                    <p className="text-xs text-text-muted max-w-[320px] leading-relaxed">
+                      {t('setup.connectHint')}
+                    </p>
+                  )}
+
+                  {connectError && !connecting && (
+                    <div className="flex items-start gap-2 text-left p-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg max-w-[340px]">
+                      <AlertCircle size={14} className="text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-[11px] text-red-700 dark:text-red-400">{connectError}</p>
+                        {rateLimited && (
+                          <p className="text-[11px] text-text-muted mt-1.5">{t('setup.connectRateLimited')}</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
               <div className="flex justify-end">
                 <button
                   onClick={() => setStep(4)}
-                  disabled={googleConnected !== true}
+                  disabled={xConnected !== true}
                   className="inline-flex items-center gap-2 px-5 py-2 bg-accent text-white font-medium text-sm rounded-lg hover:bg-accent-hover transition-colors disabled:opacity-50"
                 >
                   {t('setup.continue')}

@@ -10,6 +10,7 @@ import { useSettings } from '@/contexts/SettingsContext'
 import { MONTHS_LONG, DAYS_LONG } from '@/lib/i18n'
 import * as api from '@/lib/api'
 import type { Post } from '@/lib/api'
+import { toastResult, outcomeOf } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
 const statusDotColors: Record<string, string> = {
@@ -57,6 +58,9 @@ export function Calendar() {
     } catch { /* ignore */ }
   }, [])
 
+  // load() is async: setPosts runs after the fetch resolves, never during the
+  // effect body.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load() }, [load])
 
   const prev = () => {
@@ -103,17 +107,24 @@ export function Calendar() {
     setSelectedPosts(postsByDate[dateStr] || [])
   }
 
+  const watchPost = (id: number) => {
+    api.waitForPost(id)
+      .then(post => toastResult(outcomeOf(post, 'posted'), t('post.published'), t))
+      .catch(() => toast.error(t('common.serverError')))
+      .finally(() => load())
+  }
+
   const handleAction = async (action: string, id: number) => {
     try {
       if (action === 'post-now') {
         if (!await confirm({ message: t('composer.confirmPublish') })) return
         toast.info(t('composer.publishing'))
-        const r = await api.postNow(id)
-        r.success ? toast.success(t('post.published')) : toast.error(`${t('common.errorPrefix')} : ${r.error || t('common.unknownError')}`)
+        await api.postNow(id)
+        watchPost(id)
       } else if (action === 'retry') {
         toast.info(t('history.retrying'))
-        const r = await api.retryPost(id)
-        r.success ? toast.success(t('post.published')) : toast.error(`${t('common.errorPrefix')} : ${r.error || t('common.unknownError')}`)
+        await api.retryPost(id)
+        watchPost(id)
       } else if (action === 'duplicate') {
         await api.duplicatePost(id)
         toast.success(t('composer.duplicated'))
@@ -127,7 +138,7 @@ export function Calendar() {
           if (!await confirm({ message: t('schedule.confirmDeleteFromX'), danger: true })) return
           toast.info(t('schedule.deletingFromX'))
           const r = await api.deleteScheduledFromX(id)
-          r.success ? toast.success(t('schedule.deletedFromX')) : toast.error(`${t('common.errorPrefix')} : ${r.error || t('common.unknownError')}`)
+          toastResult(r, t('schedule.deletedFromX'), t)
         } else {
           if (!await confirm({ message: t('history.confirmDeleteFromX'), danger: true })) return
           toast.info(t('history.deletingFromX'))
