@@ -1237,6 +1237,60 @@ def _parse_count(text):
         return 0
 
 
+# --- verification badge -----------------------------------------------------
+#
+# The label is whatever X's interface language says, so it is compared with
+# accents stripped and case folded: a French "Compte certifié" has to count just
+# as much as an English "Verified account".
+
+_VERIFIED_MARKERS = ('verified', 'verifie', 'certifie')
+_BUSINESS_MARKERS = ('business', 'entreprise', 'organisation', 'organization')
+_GOVERNMENT_MARKERS = ('government', 'gouvernement', 'gouvernemental')
+
+
+def _fold(text):
+    """Lowercase and strip accents, so 'Vérifié' and 'verifie' compare equal."""
+    import unicodedata
+    decomposed = unicodedata.normalize('NFD', (text or '').lower())
+    return ''.join(c for c in decomposed if unicodedata.category(c) != 'Mn')
+
+
+def _badge_type(aria_label):
+    """'' if this label is not a verification badge, else blue/business/government."""
+    folded = _fold(aria_label)
+    if not any(marker in folded for marker in _VERIFIED_MARKERS):
+        return ''
+    if any(marker in folded for marker in _BUSINESS_MARKERS):
+        return 'business'
+    if any(marker in folded for marker in _GOVERNMENT_MARKERS):
+        return 'government'
+    return 'blue'
+
+
+def _verified_in_payload(data, username):
+    """Read is_blue_verified for `username` out of X's embedded JSON.
+
+    Scoped on purpose: the page also carries data about accounts X suggests, and
+    a blanket search for is_blue_verified would happily pick up a stranger's
+    badge and hand this user a 25,000 character limit they do not have.
+    """
+    target = _fold(username).lstrip('@')
+    if not target:
+        return None
+
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            screen_name = node.get('screen_name') or node.get('username')
+            if screen_name and _fold(screen_name) == target and 'is_blue_verified' in node:
+                return bool(node['is_blue_verified'])
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return None
+
+
 def _do_fetch_profile():
     """Fetch profile picture and display name from X. Runs in worker thread."""
     try:
@@ -1259,56 +1313,52 @@ def _do_fetch_profile():
         if name_el:
             display_name = name_el.inner_text().strip()
 
-        # Detect verification badge
+        # Detect the verification badge. This drives the character limit, so a
+        # wrong answer either blocks a long post or lets X reject one.
         is_verified = False
         verified_type = ''
         try:
-            # Method 1: look for the verified badge SVG near the username
-            badge_selectors = [
-                'div[data-testid="UserName"] svg[aria-label*="Verified"]',
-                'div[data-testid="UserName"] svg[aria-label*="erifi"]',
-                'div[data-testid="UserName"] svg[aria-label*="Certifi"]',
-            ]
-            for sel in badge_selectors:
-                badge_el = _wait(page, sel, timeout=2000)
-                if badge_el:
-                    aria = badge_el.get_attribute('aria-label') or ''
+            # Method 1: the badge sits next to the display name. Read every
+            # label there rather than guessing at the wording.
+            labels = page.evaluate("""() => {
+                const out = [];
+                for (const el of document.querySelectorAll(
+                        'div[data-testid="UserName"] [aria-label]')) {
+                    const label = el.getAttribute('aria-label');
+                    if (label) out.push(label);
+                }
+                return out;
+            }""") or []
+            for label in labels:
+                badge = _badge_type(label)
+                if badge:
                     is_verified = True
-                    verified_type = 'blue'  # default
-                    # Gold badge = business, grey = government
-                    if 'business' in aria.lower() or 'entreprise' in aria.lower():
-                        verified_type = 'business'
-                    elif 'government' in aria.lower() or 'gouvernement' in aria.lower():
-                        verified_type = 'government'
-                    logger.info(f"Verification badge detected: {verified_type} ({aria})")
+                    verified_type = badge
+                    logger.info(f"Verification badge detected: {badge} ({label})")
                     break
 
-            # Method 2: intercept GraphQL data embedded in the page
+            # Method 2: the JSON X embeds in the page, read for this account only.
             if not is_verified:
-                result_json = page.evaluate("""() => {
-                    try {
-                        const scripts = document.querySelectorAll('script[type="application/json"]');
-                        for (const s of scripts) {
-                            const txt = s.textContent || '';
-                            if (txt.includes('is_blue_verified')) {
-                                return txt;
-                            }
-                        }
-                    } catch(e) {}
-                    return '';
-                }""")
-                if result_json:
+                payloads = page.evaluate("""() => Array.from(
+                    document.querySelectorAll('script[type="application/json"]'))
+                    .map(s => s.textContent || '')
+                    .filter(t => t.includes('is_blue_verified'))""") or []
+                for raw in payloads:
                     try:
-                        data = json.loads(result_json)
-                        data_str = json.dumps(data)
-                        if '"is_blue_verified":true' in data_str:
-                            is_verified = True
-                            verified_type = 'blue'
-                            logger.info("Verification detected via embedded GraphQL data")
+                        found = _verified_in_payload(json.loads(raw), username)
                     except Exception:
-                        pass
+                        continue
+                    if found is None:
+                        continue
+                    is_verified = found
+                    verified_type = 'blue' if found else ''
+                    logger.info(f"Verification for @{username} from embedded data: {found}")
+                    break
         except Exception as e:
             logger.warning(f"Badge detection failed (non-critical): {e}")
+
+        if not is_verified:
+            logger.info("No verification badge found; the 280 character limit applies")
 
         # Get bio
         bio = ''

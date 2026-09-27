@@ -465,6 +465,81 @@ def test_check_posts_on_x(client):
           r.get_json()['checked'] == 0, r.get_json())
 
 
+
+def test_verified_detection(client):
+    """Whether the account is verified decides the character limit.
+
+    Get it wrong one way and a Premium user is stuck at 280 characters; the
+    other way and X rejects the post.
+    """
+    section('verified account detection')
+
+    import bot
+
+    # The badge label is written in the interface language.
+    for label, expected in (
+        ('Verified account', 'blue'),
+        ('Verified', 'blue'),
+        ('Compte certifié', 'blue'),        # accents and lowercase: the old
+        ('Compte vérifié', 'blue'),         # selectors matched neither
+        ('compte certifie', 'blue'),
+        ('Verified business account', 'business'),
+        ('Compte entreprise vérifié', 'business'),
+        ('Government account verified', 'government'),
+        ('Compte gouvernemental certifié', 'government'),
+    ):
+        check(f'{label!r} -> {expected}', bot._badge_type(label) == expected,
+              bot._badge_type(label))
+
+    for label in ('Follow', 'Suivre', 'Profile photo', 'More', '', None):
+        check(f'{label!r} is not a badge', bot._badge_type(label) == '', bot._badge_type(label))
+
+    # X embeds data about suggested accounts on the same page.
+    page = {
+        'data': {'user': {'result': {'screen_name': 'me', 'is_blue_verified': False}}},
+        'suggestions': [{'screen_name': 'someone_famous', 'is_blue_verified': True}],
+    }
+    check('a stranger\'s badge is not taken for ours',
+          bot._verified_in_payload(page, 'me') is False,
+          bot._verified_in_payload(page, 'me'))
+    check('that stranger is still readable on their own name',
+          bot._verified_in_payload(page, 'someone_famous') is True)
+    check('an account absent from the payload is unknown, not false',
+          bot._verified_in_payload(page, 'nobody') is None)
+    check('the @ and the case do not matter',
+          bot._verified_in_payload(page, '@ME') is False)
+    check('a verified owner is found',
+          bot._verified_in_payload({'u': {'screen_name': 'me', 'is_blue_verified': True}},
+                                   'me') is True)
+    check('an empty username never matches', bot._verified_in_payload(page, '') is None)
+
+    # And the limit that hangs off it.
+    import json
+    import os
+    info = os.path.join(appmod.DATA_DIR, 'profile_info.json')
+    try:
+        with open(info, 'w', encoding='utf-8') as fh:
+            json.dump({'is_verified': False}, fh)
+        check('an ordinary account is capped at 280', appmod.char_limit() == 280,
+              appmod.char_limit())
+        r = client.post('/api/posts', headers=LOCAL,
+                        data={'text': 'x' * 281, 'status': 'draft'})
+        check('and the server refuses a longer post', r.status_code == 400, r.status_code)
+
+        with open(info, 'w', encoding='utf-8') as fh:
+            json.dump({'is_verified': True}, fh)
+        check('a verified account gets 25000', appmod.char_limit() == 25_000,
+              appmod.char_limit())
+        r = client.post('/api/posts', headers=LOCAL,
+                        data={'text': 'x' * 281, 'status': 'draft'})
+        check('and the same post is accepted', r.status_code == 201, r.status_code)
+        if r.status_code == 201:
+            client.delete(f"/api/posts/{r.get_json()['id']}", headers=LOCAL)
+    finally:
+        if os.path.isfile(info):
+            os.remove(info)
+
+
 def main():
     database.init_db()
     client = appmod.app.test_client()
@@ -478,6 +553,7 @@ def main():
     test_native_window_fallback()
     test_browser_mode_hint(client)
     test_check_posts_on_x(client)
+    test_verified_detection(client)
     test_env_round_trip()
 
     print(f'\n{len(passed)} passed, {len(failed)} failed')
