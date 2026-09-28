@@ -816,8 +816,18 @@ def agent_auto_approve():
 
 
 def agent_web_access():
-    """True when the user allowed the assistant to search and fetch the web."""
-    return str(read_json_file(PREFERENCES_PATH).get(AGENT_WEB_KEY, '')).lower() == 'true'
+    """True when the assistant may search and fetch the web.
+
+    On unless the user turned it off. Checking a claim before it goes into a post
+    is the ordinary case, and defaulting to off meant the assistant kept refusing
+    work it was meant to do. Turning it off is still one click, and an explicit
+    'false' is honoured - only an install that never expressed a choice gets the
+    default.
+    """
+    stored = str(read_json_file(PREFERENCES_PATH).get(AGENT_WEB_KEY, '')).strip().lower()
+    if stored in ('true', 'false'):
+        return stored == 'true'
+    return True
 
 
 def _api_base():

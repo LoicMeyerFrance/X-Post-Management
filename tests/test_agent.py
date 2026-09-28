@@ -531,6 +531,20 @@ def test_agent_routes(client):
     r = client.post('/api/agent/auto', json={}, headers=LOCAL)
     check('auto endpoint rejects a payload without the flag', r.status_code == 400, r.status_code)
 
+    # On unless turned off: an install that never expressed a choice gets it.
+    import json as _json
+    prefs_path = appmod.PREFERENCES_PATH
+    saved = appmod.read_json_file(prefs_path)
+    stripped = {k: v for k, v in saved.items() if k != appmod.AGENT_WEB_KEY}
+    appmod.write_json_file(prefs_path, stripped)
+    check('web access is allowed by default', appmod.agent_web_access() is True)
+    check('and the status says so',
+          client.get('/api/agent/status', headers=LOCAL).get_json().get('web_access') is True)
+    appmod.write_json_file(prefs_path, {**stripped, appmod.AGENT_WEB_KEY: 'false'})
+    check('an explicit refusal is honoured', appmod.agent_web_access() is False)
+    appmod.write_json_file(prefs_path, saved)
+    del _json
+
     r = client.post('/api/agent/web', json={'web_access': True}, headers=LOCAL)
     check('web access can be allowed', r.get_json().get('web_access') is True, r.get_json())
     check('and is stored server-side', appmod.agent_web_access() is True)

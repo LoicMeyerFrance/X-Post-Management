@@ -164,13 +164,15 @@ flags close it: `--tools ""` drops every built-in tool, and
 Asked to read a file or run a command, the agent answers that it has no tool for
 it — and it has none.
 
-**Internet — off by default, one toggle.** With it off the agent cannot look
-anything up, and is told not to state an outside fact as if it had checked it: ask
-for a post about news it cannot confirm and it says so instead of inventing. Turn
-it on and it gains exactly two read-only tools, `WebSearch` and `WebFetch`, so it
-can verify a claim and cite where it came from before the text goes into a post.
-Nothing else comes with them — still no shell, no files — and `WebFetch` cannot
-reach a private address, so it cannot be turned back on this app's own API.
+**Internet — on, and one toggle away from off.** The agent has exactly two
+read-only tools for it, `WebSearch` and `WebFetch`, so it can verify a claim and
+cite where it came from before the text goes into a post. Nothing else comes with
+them — still no shell, no files — and `WebFetch` cannot reach a private address,
+so it cannot be turned back on this app's own API.
+
+Switch it off and the agent cannot look anything up, and is told not to state an
+outside fact as if it had checked one: ask for a post about news it cannot confirm
+and it says so instead of inventing.
 
 **Approval — one tick per post.** Each post the agent creates appears in the
 conversation as a card with a ✓ and a ✗. Nothing reaches X until you press ✓,
@@ -181,7 +183,7 @@ which runs exactly the same publish path as the calendar; ✗ deletes the draft.
 | Write drafts, schedule, edit, delete in the app | yes | yes |
 | Publish to X, schedule inside X | only when you press ✓ | the agent may do it itself |
 | Shell and filesystem access | **none** | **none** |
-| Search and read the web | only with the Internet toggle on | only with the Internet toggle on |
+| Search and read the web | yes, unless you switch Internet off | yes, unless you switch Internet off |
 
 In manual mode the publish tools are not even in the agent's tool list, and the
 MCP server refuses them if called anyway — hiding a tool is a hint to the model,
@@ -259,9 +261,9 @@ interface. Three further precautions:
 
 - **it has no tools but this app's.** The session runs with `--tools ""` and
   `--strict-mcp-config`, so it carries no shell, no file access and no MCP server
-  from anywhere else — only `create_post`, `list_posts` and the rest. Turning the
-  Internet toggle on adds `WebSearch` and `WebFetch`, both read-only, and nothing
-  besides;
+  from anywhere else — only `create_post`, `list_posts` and the rest, plus
+  `WebSearch` and `WebFetch` while the Internet toggle is on. Those two are
+  read-only, and nothing else comes with them;
 - **it cannot publish unless you say so.** In manual mode the publish tools are
   absent from its tool list, denied at the client, *and* refused by the server if
   called anyway — hiding a tool is a hint to the model, not an access control;
