@@ -2,7 +2,7 @@
 
 Desktop application to manage and schedule your X (Twitter) posts locally and
 securely — with an assistant that writes and schedules them for you, running on
-your own Claude subscription.
+your own Claude, OpenAI or Google account.
 
 > ### ✅ Up to date for 2026
 >
@@ -11,10 +11,12 @@ your own Claude subscription.
 > images and video, and no longer opens a blank window on Windows.
 >
 > **New:** an [Assistant](#assistant) tab — ask for three posts about your launch
-> and it drafts them, schedules them and fills your calendar. It drives *your own*
-> [Claude Code](https://code.claude.com), so there is nothing extra to pay for and
-> the app never sees your Claude credentials. It can do what this app does and
-> nothing else: no shell, no files, no web.
+> and it drafts them, schedules them and fills your calendar. Choose
+> [Claude Code](https://code.claude.com), [Codex](https://developers.openai.com/codex/cli)
+> or [Gemini CLI](https://github.com/google-gemini/gemini-cli): it drives the one
+> *you* already pay for, so there is nothing extra to buy and the app never sees
+> your credentials. It can do what this app does and nothing else — and it can
+> read your own published timeline, so it knows what you have already said.
 >
 > [![Latest release](https://img.shields.io/github/v/release/LoicMeyerFrance/X-Post-Management?label=latest&color=2563eb)](https://github.com/LoicMeyerFrance/X-Post-Management/releases/latest)
 >
@@ -31,8 +33,8 @@ your own Claude subscription.
 - **Everything on X**: read your whole timeline back from your profile, including
   posts published from your phone or the website, with their view and like counts
 - **Assistant** tab: describe what you want in plain words and it writes, schedules
-  and fills your calendar — it runs *your own* Claude Code, so there is no extra
-  subscription (see [Assistant](#assistant))
+  and fills your calendar — it runs *your own* Claude Code, Codex or Gemini CLI, so
+  there is no extra subscription (see [Assistant](#assistant))
 - **My Profile** page: followers/following stats, bio, growth chart, follower variations
 - Auto-detect Chrome installation
 - Persistent preferences (language, theme) across sessions
@@ -129,15 +131,34 @@ The **Assistant** tab is a chat: ask for what you want and it writes the posts,
 schedules them and reads the calendar back to you. *"Prepare three posts about
 the 1.5 release, one a day at 9am"* is a complete instruction.
 
-It does not embed a model. The app runs the
-[Claude Code](https://code.claude.com) CLI installed on your machine as a child
-process, and gives it a small set of tools over
+It does not embed a model. The app runs a command-line agent already installed on
+your machine as a child process, and gives it a small set of tools over
 [MCP](https://modelcontextprotocol.io) — `create_post`, `list_posts`,
 `update_post`, `get_limits` and so on, all of which go through the same local API
 and the same validation as the rest of the interface.
 
-**Setup: two buttons, no terminal.** Open the Assistant tab and it shows what is
-missing and how to fix it:
+**Three to choose from.** Open the Assistant tab and you get three cards:
+
+| | Runs on | Confined to this app's tools |
+|---|---|---|
+| **Claude Code** | Claude Pro, Max, Team or Enterprise | yes |
+| **Gemini CLI** | a Google account, or `GEMINI_API_KEY` | yes |
+| **Codex** | a ChatGPT plan, or an OpenAI key | partly — see below |
+
+The app checks your machine before you choose, so each card says whether that
+agent is already installed and, if not, gives the command to install it. Click a
+card to pick it; your choice is remembered, and **Change MCP** at the top right
+switches later. Switching starts a fresh conversation, since the agents do not
+share one.
+
+**Codex is confined less far than the other two, and its card says so.** Its
+shell and file tools are core to it and have no disable switch; the app runs it
+read-only and approval-free so its MCP calls work at all, but it can still read
+files on your computer. Claude Code and Gemini CLI can both be stripped to this
+app's tools alone. If that matters to you, pick one of those.
+
+**Setup: two buttons, no terminal.** Once a card is picked, the tab shows what is
+missing and how to fix it. For Claude Code that is:
 
 1. **Install** runs Anthropic's official installer for you. No Node.js, nothing
    to download by hand, and the exact command is shown before it runs. (It is
@@ -148,6 +169,9 @@ missing and how to fix it:
 
 Each step shows a tick once it is done, read from `claude auth status` rather than
 guessed, so the tab never sends you into a chat that fails on its first message.
+Gemini and Codex are installed with one `npm` command, shown on their card, and
+signed into by running them once in a terminal — after which the tab picks the
+sign-in up by itself.
 Because the CLI holds your account, the app never asks for your Claude
 credentials and never handles them.
 
@@ -190,12 +214,32 @@ MCP server refuses them if called anyway — hiding a tool is a hint to the mode
 not an access control, so both are in place. Automatic mode lets the agent
 publish without asking; the cards then report what it did rather than asking you.
 
+**It can read what you have already published.** `list_published` returns the
+posts already on X for this account — mirrored from your profile, so it includes
+everything sent from your phone or the website, going back years — and
+`get_stats` reports how they did. Both are read-only and available in either
+approval mode: knowing what is out there is how it avoids saying it twice. Ask
+*"have I posted about this before?"* or *"what did best?"* and it looks rather
+than guesses.
+
+X shows a view count on some posts and not others. A blank count is reported as
+unknown rather than zero, and every figure says how many posts it could measure,
+so an average never quietly pretends to cover the lot.
+
+**Give it a document.** Point it at a file or a folder and it reads from it to
+write your posts — `list_documents` and `read_document`, that folder and nothing
+outside it. It cannot see anything else on your computer.
+
+**Edit before it goes.** In manual mode a post card can be edited in place before
+you press ✓, so a good draft with one wrong word does not need to be thrown away
+and asked for again.
+
 **Media.** Give it a path and it attaches the file: images and video both work,
 with the same per-account size limits as the composer (5 MB images, 512 MB video,
 16 GB on Premium).
 
-**Which account pays.** By default, the Claude Code signed in on this machine —
-your own subscription, nothing extra to buy. Leave the key field in
+**Which account pays.** By default, the agent signed in on this machine — your
+own subscription, nothing extra to buy. Leave the key field in
 **Settings → Assistant** empty for that. Enter an Anthropic API key there instead
 and the run is billed to that API account; the key is stored in the OS credential
 store, never in a file.
@@ -227,6 +271,9 @@ store, never in a file.
   do it by hand, the commands are in [Assistant](#assistant). A packaged app
   started from Explorer can have a narrower `PATH` than your terminal, so the app
   also looks in the native-installer, WinGet and npm locations.
+- **Assistant: "not signed in" for Gemini or Codex**: run `gemini` or `codex` once
+  in a terminal and sign in there. The app never handles those credentials, so it
+  cannot sign in for you — but it reads the result and the tab updates.
 - **Assistant: signed in but the tab still asks**: press *Check again*. The state
   comes from `claude auth status`, which the app re-reads rather than caching.
 - **Assistant: "the app's tools could not be loaded"**: the MCP server did not
