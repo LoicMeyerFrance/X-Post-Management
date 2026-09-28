@@ -222,10 +222,21 @@ def tool_create_post(args):
 
     body, content_type = _multipart(fields, 'image' if media_path else None, media_path or None)
     created = _request('POST', '/api/posts', data=body, content_type=content_type)
+
+    # The note has to match the mode. It used to say "nothing is public until it
+    # is published" in every case, which contradicted what automatic mode tells
+    # the agent - so it believed the tool, called publish_now on a post the app
+    # was already sending, and had to explain a 409 to the user.
+    if allow_publish():
+        note = ('Saved, and the app publishes it by itself in automatic mode. '
+                'Do NOT call publish_now or schedule_on_x for this post.')
+    else:
+        note = ('Saved in the app. Nothing is public until the user approves it '
+                'in the conversation.')
     return {
         'id': created.get('id'),
         'status': created.get('status'),
-        'note': 'Saved in the app. Nothing is public until it is published.',
+        'note': note,
     }
 
 

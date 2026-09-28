@@ -430,9 +430,12 @@ MANUAL_TAIL = (
 AUTO_TAIL = (
     ' The user has turned on automatic approval, so every post you create goes '
     'out to X immediately - a dated one through X\'s own scheduler, an undated one '
-    'straight away. Treat create_post as publishing: say what you published, and '
-    'do not describe anything as a draft awaiting approval. Because it is '
-    'immediate, get the text right before you call it.'
+    'straight away. The app sends it: create_post is all you need, and calling '
+    'publish_now or schedule_on_x for a post you just created only races with it. '
+    'Use those two only for a post that already existed before this request. '
+    'Treat create_post as publishing: say what you published, and do not describe '
+    'anything as a draft awaiting approval. Because it is immediate, get the text '
+    'right before you call it.'
 )
 
 

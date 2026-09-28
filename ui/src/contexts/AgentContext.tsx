@@ -115,8 +115,17 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
   /** Send one post on its way. `scheduledAt` picks which kind of yes it is. */
   const publishProposal = useCallback(async (postId: number, scheduledAt: string | null) => {
-    if (scheduledAt) await api.scheduleNow(postId)
-    else await api.postNow(postId)
+    try {
+      if (scheduledAt) await api.scheduleNow(postId)
+      else await api.postNow(postId)
+    } catch (err) {
+      // 409 means the browser already took this post - in automatic mode the
+      // agent can reach for it at the same moment the app does. Whoever got
+      // there first is sending it, so this is not a failure: follow the post and
+      // report what actually happened to it.
+      const status = (err as { status?: number })?.status
+      if (status !== 409) throw err
+    }
     await settleProposal(postId)
   }, [settleProposal])
 

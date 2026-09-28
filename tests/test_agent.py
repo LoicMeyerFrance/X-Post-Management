@@ -163,6 +163,44 @@ def test_mcp_argument_validation():
     check('non-object arguments refused', result.get('isError') is True, result)
 
 
+def test_create_post_note_matches_the_mode():
+    """What create_post says about publishing has to match what actually happens.
+
+    The note used to claim nothing was public until published, in every mode. In
+    automatic mode the app publishes immediately, so the agent believed the tool,
+    called publish_now on a post already on its way, and got a 409 it then had to
+    explain to the user.
+    """
+    section('what create_post tells the agent')
+
+    # Exercise the real function; only the HTTP call is stubbed out.
+    real_request = mcp_server._request
+    mcp_server._request = lambda *a, **k: {'id': 7, 'status': 'draft'}
+    saved = os.environ.get('XPM_AGENT_ALLOW_PUBLISH')
+    try:
+        os.environ.pop('XPM_AGENT_ALLOW_PUBLISH', None)
+        manual = mcp_server.tool_create_post({'text': 'hello'})['note']
+        os.environ['XPM_AGENT_ALLOW_PUBLISH'] = '1'
+        auto = mcp_server.tool_create_post({'text': 'hello'})['note']
+    finally:
+        mcp_server._request = real_request
+        if saved is None:
+            os.environ.pop('XPM_AGENT_ALLOW_PUBLISH', None)
+        else:
+            os.environ['XPM_AGENT_ALLOW_PUBLISH'] = saved
+
+    check('manual mode says the user approves it', 'approves it' in manual, manual)
+    check('manual mode does not claim it was sent',
+          'publishes it by itself' not in manual, manual)
+    check('auto mode says the app sends it', 'publishes it by itself' in auto, auto)
+    check('auto mode tells it not to publish again',
+          'Do NOT call publish_now' in auto, auto)
+    check('the two notes differ', auto != manual)
+    # Whichever mode, the note must not contradict itself.
+    check('auto mode never says nothing is public',
+          'Nothing is public' not in auto, auto)
+
+
 def test_mcp_multipart():
     section('MCP multipart encoding')
 
@@ -272,6 +310,13 @@ def test_agent_command():
           'goes out to X immediately' in prompt, prompt[-140:])
     check('auto mode does not talk about awaiting approval',
           'waiting for them' not in prompt, prompt[-140:])
+    # The app sends what the agent creates. Reaching for publish_now as well only
+    # races with it, and the loser gets a 409 it then has to explain.
+    check('auto mode tells it not to publish what it just created',
+          'publish_now or schedule_on_x for a post you just created' in prompt,
+          prompt[-260:])
+    check('and says when those tools are for',
+          'already existed before this request' in prompt, prompt[-260:])
 
     # Version gating for --permission-prompts.
     argv = agent.build_command('hi', cli_path=fake_cli, version=(2, 1, 258))
@@ -829,6 +874,7 @@ def main():
     test_mcp_handshake()
     test_mcp_tool_gating()
     test_mcp_argument_validation()
+    test_create_post_note_matches_the_mode()
     test_mcp_multipart()
     test_agent_command()
     test_agent_key_handling()
