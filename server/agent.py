@@ -788,8 +788,9 @@ def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True,
         _current['process'] = process
 
     stderr_chunks = []
-    # Plain-text lines on stdout: a CLI that cannot start often says why there
-    # and still exits 0, so these are the only explanation that turn will get.
+    # Plain-text lines on stdout, kept rather than dropped: a CLI that fails
+    # before it can stream anything explains itself in prose, and not always on
+    # stderr. Gemini uses stderr and exit 41; that is one CLI and one version.
     noise_chunks = []
 
     def drain_stderr():
@@ -867,8 +868,8 @@ def _explain_failure(code, stderr_text, provider_id=None, stdout_text=''):
     binary = (provider.get('binaries') or ('claude',))[0]
     install = providers.install_command(provider['id'])
 
-    # stdout counts: a CLI that cannot start often prints the reason there and
-    # exits 0 all the same.
+    # Both streams count. The reason a CLI could not start is prose, and which
+    # stream carries it is not something to rely on.
     text = '\n'.join(part for part in ((stderr_text or '').strip(),
                                        (stdout_text or '').strip()) if part)
     lowered = text.lower()
