@@ -237,6 +237,26 @@ export function uploadUrl(filename: string): string {
   return `${BASE}/uploads/${filename}`
 }
 
+export interface StorageInfo {
+  path: string
+  /** Why the data is there: standard, legacy (beside the exe), portable, override. */
+  kind: 'standard' | 'legacy' | 'portable' | 'override' | 'development'
+  bytes: number
+  data_dir: string
+  standard_path?: string
+}
+
+export async function fetchStorage(): Promise<StorageInfo> {
+  const res = await fetch(`${BASE}/api/storage`)
+  return handleResponse<StorageInfo>(res)
+}
+
+export async function openStorageFolder(): Promise<{ opened?: boolean; path?: string; error?: string }> {
+  const res = await fetch(`${BASE}/api/storage/open`, { method: 'POST' })
+  const body = await res.json().catch(() => ({}))
+  return body
+}
+
 export async function browseFolder(): Promise<{ path: string | null; error?: string }> {
   const res = await fetch(`${BASE}/api/browse/folder`, { method: 'POST' })
   return handleResponse<{ path: string | null; error?: string }>(res)

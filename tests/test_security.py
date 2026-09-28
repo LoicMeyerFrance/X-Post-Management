@@ -239,6 +239,43 @@ def test_account_identity():
           'signed in as @' in login or 'not @' in login)
 
 
+def test_automation_notice():
+    """The banner shown in the sign-in window must not break the sign-in.
+
+    It shares the page with the automation: if it swallows a click, or if its
+    wording matches a label the clicker searches for, the window the user is
+    watching stops working - and the banner exists precisely so they leave it be.
+    """
+    section('the automation notice')
+
+    import bot
+
+    payload = bot._banner_payload()
+    check('the notice has text', len(payload.get('text', '')) > 30, payload)
+
+    # A label collision would have the clicker find the banner, not the button.
+    labels = set(bot._SUBMIT_LABELS) | set(bot._LOGIN_LABELS)
+    for language, text in bot._BANNER_TEXT.items():
+        lowered = text.lower()
+        clashes = sorted(label for label in labels if label in lowered)
+        check(f'the {language} notice contains no clickable label', not clashes, clashes)
+        check(f'the {language} notice does not start with one',
+              not any(lowered.startswith(label) for label in labels))
+
+    # It must never intercept a click, which is also what keeps the blocking
+    # overlay check from mistaking it for X's own backdrop.
+    source = open(os.path.join(ROOT, 'server', 'bot.py'), encoding='utf-8').read()
+    banner = source[source.index('_BANNER_JS'):source.index('def _banner_payload')]
+    check('the notice cannot be clicked', 'pointer-events:none' in banner, banner[:100])
+    injected = source[source.index('def _show_automation_notice'):]
+    injected = injected[:injected.index('\n\n\n')]
+    check('the injected copy cannot be clicked either',
+          'pointer-events:none' in injected, injected[:120])
+    check('the overlay check ignores unclickable elements',
+          "pointerEvents === 'none'" in source)
+    check('it is re-applied after a navigation', 'add_init_script' in injected)
+
+
 def test_source():
     section('settings that must not come back')
 
@@ -357,6 +394,7 @@ def main():
     test_input_validation(client)
     test_password_storage()
     test_account_identity()
+    test_automation_notice()
     test_source()
 
     print(f'\n{len(passed)} passed, {len(failed)} failed')

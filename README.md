@@ -289,15 +289,40 @@ log and falls back to keeping the password in `.env`.
 An existing install is upgraded on first launch: the password is moved out of
 `.env` automatically, and nothing is asked of you.
 
-## Files Created
+## Where your data lives
 
-The app creates these files next to the executable:
+Everything the app keeps — posts, uploads and a browser profile that runs to a
+few hundred megabytes — goes in one folder:
+
+| | |
+|---|---|
+| Windows | `Documents\X Post Management\` |
+| macOS | `~/Documents/X Post Management/` |
+| If Documents is synced to OneDrive, Dropbox or iCloud | the platform's app-data folder instead |
+
+Documents because it is somewhere you can find, back up and delete on purpose. Not
+a synced Documents, though: a sync client copying a live SQLite database and a
+browser profile out from under the app means conflict copies, gigabytes of upload
+and a database that can be corrupted mid-write — so the app checks, and steps
+aside when it finds one.
+
+**Settings → Your data** shows the exact path, how much room it takes, and opens
+the folder.
+
+Two deliberate exceptions:
+
+- **An install that already keeps its data beside the executable keeps doing so.**
+  Earlier versions wrote there, and an app that silently changes folder looks
+  exactly like one that lost every post. Settings says so, and tells you where to
+  move it if you want to.
+- **A `portable.txt` file next to the executable** forces everything beside it —
+  for a USB stick, or to leave no trace elsewhere. `XPM_HOME` overrides the lot.
 
 ```
 data/
   posts.db            - SQLite database (posts, the X mirror, followers history)
-  profile_info.json   - Cached profile information
-  profile_picture.jpg - Profile picture
+  profile_info_<handle>.json   - Cached profile, one file per X account
+  profile_picture_<handle>.jpg - Profile picture
   preferences.json    - UI preferences (language, theme)
   session.json        - Whether the last sign-in succeeded (no credentials)
   chrome_profile/     - Browser profile, when CHROME_PROFILE_DIR is empty

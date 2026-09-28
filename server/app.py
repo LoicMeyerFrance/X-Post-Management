@@ -5,6 +5,7 @@ import os
 import platform
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import uuid
@@ -1146,6 +1147,47 @@ def _file_dialog(dialog_type, **kwargs):
     except Exception as exc:
         logger.warning("File dialog failed: %s", exc)
         return jsonify({'path': None, 'error': str(exc)})
+
+
+@app.route('/api/storage', methods=['GET'])
+def api_storage():
+    """Where the app keeps its data, and how big it has grown.
+
+    Worth showing: the folder holds the posts, the uploads and a browser profile
+    that runs to hundreds of megabytes, and a user who cannot find it cannot back
+    it up or delete it on purpose.
+    """
+    info = dict(paths.describe_location())
+    total = 0
+    for folder in (DATA_DIR, LOG_DIR):
+        for root, _dirs, files in os.walk(folder):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    continue
+    info['bytes'] = total
+    info['data_dir'] = DATA_DIR
+    return jsonify(info)
+
+
+@app.route('/api/storage/open', methods=['POST'])
+def api_storage_open():
+    """Show the data folder in the file manager."""
+    target = paths.BASE_DIR
+    if not os.path.isdir(target):
+        return jsonify({'error': 'The data folder does not exist yet'}), 404
+    try:
+        if sys.platform == 'win32':
+            os.startfile(target)                              # noqa: S606
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', target])
+        else:
+            subprocess.Popen(['xdg-open', target])
+    except Exception as exc:
+        logger.warning("Could not open the data folder: %s", exc)
+        return jsonify({'error': str(exc), 'path': target}), 500
+    return jsonify({'opened': True, 'path': target})
 
 
 @app.route('/api/browse/folder', methods=['POST'])

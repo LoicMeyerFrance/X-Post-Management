@@ -364,6 +364,87 @@ def _blocking_overlay(page):
         return None
 
 
+# --- telling the user what this window is doing -----------------------------
+#
+# The sign-in window fills itself in. Someone watching it has every reason to
+# think they should help, and a stray click lands on the wrong control or steals
+# focus mid-typing. A banner says what is happening, in the one place they are
+# actually looking.
+#
+# Three constraints, each of which would otherwise break the automation:
+#   * pointer-events: none, so it never swallows a click - and so
+#     _BLOCKING_OVERLAY_JS, which skips exactly that, does not mistake it for
+#     X's own backdrop;
+#   * wording that contains none of _SUBMIT_LABELS or _LOGIN_LABELS, or the
+#     label matcher could find the banner instead of the button;
+#   * re-applied on every navigation, because X replaces the document.
+
+_BANNER_ID = 'xpm-automation-notice'
+
+_BANNER_TEXT = {
+    'fr': ('Cette fenêtre est pilotée par X Post Management. '
+           'Laissez-la faire — cliquez seulement si X vous demande un code.'),
+    'en': ('This window is being driven by X Post Management. '
+           'Let it work - only click if X asks you for a code.'),
+}
+
+_BANNER_JS = """
+(payload) => {
+  const install = () => {
+    if (!document.body) return;
+    let el = document.getElementById(payload.id);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = payload.id;
+      document.body.appendChild(el);
+    }
+    el.textContent = payload.text;
+    el.setAttribute('style', [
+      'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:2147483647',
+      'pointer-events:none', 'padding:10px 16px',
+      'background:#1d9bf0', 'color:#fff',
+      'font:600 14px/1.4 -apple-system,Segoe UI,Roboto,sans-serif',
+      'text-align:center', 'box-shadow:0 2px 8px rgba(0,0,0,.25)',
+      'letter-spacing:.2px'
+    ].join(';'));
+  };
+  if (document.body) install();
+  else document.addEventListener('DOMContentLoaded', install, { once: true });
+}
+"""
+
+
+def _banner_payload():
+    language = (os.environ.get('XPM_LOCALE') or '').strip().lower()
+    text = _BANNER_TEXT.get(language[:2], _BANNER_TEXT['fr'])
+    return {'id': _BANNER_ID, 'text': text}
+
+
+def _show_automation_notice(page):
+    """Put the notice on the page, now and after every navigation."""
+    payload = _banner_payload()
+    try:
+        # Survives X replacing the document, which it does between steps.
+        page.add_init_script(f'window.__xpmNotice = {json.dumps(payload)};'
+                             'document.addEventListener("DOMContentLoaded", () => {'
+                             '  const p = window.__xpmNotice; if (!p) return;'
+                             '  const el = document.createElement("div");'
+                             '  el.id = p.id; el.textContent = p.text;'
+                             '  el.setAttribute("style", "position:fixed;top:0;left:0;right:0;'
+                             'z-index:2147483647;pointer-events:none;padding:10px 16px;'
+                             'background:#1d9bf0;color:#fff;font:600 14px/1.4 -apple-system,'
+                             'Segoe UI,Roboto,sans-serif;text-align:center;'
+                             'box-shadow:0 2px 8px rgba(0,0,0,.25)");'
+                             '  document.body && document.body.appendChild(el);'
+                             '}, { once: true });')
+    except Exception as exc:
+        logger.debug(f"Could not register the automation notice: {exc}")
+    try:
+        page.evaluate(_BANNER_JS, payload)
+    except Exception as exc:
+        logger.debug(f"Could not show the automation notice: {exc}")
+
+
 def _accept_cookies(page):
     """Accept X's cookie banner, and make sure it is really gone.
 
@@ -1642,6 +1723,10 @@ def _do_connect_x():
         # Relaunch on screen if a headless browser is already up.
         _close_browser_internal()
         page = _ensure_browser()
+
+        # The window is about to fill itself in while the user watches. Say so
+        # before the first keystroke, not after they have clicked something.
+        _show_automation_notice(page)
 
         result = _login(page)
         if result.get('success'):

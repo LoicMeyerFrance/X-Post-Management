@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Wifi, RefreshCw, Loader2, HelpCircle, X, Save, Pencil, AlertCircle, Trash2, BadgeCheck, Search, LogIn, Monitor, EyeOff, Bot, Terminal, KeyRound } from 'lucide-react'
+import { Wifi, RefreshCw, Loader2, HelpCircle, X, Save, Pencil, AlertCircle, Trash2, BadgeCheck, Search, LogIn, Monitor, EyeOff, Bot, Terminal, KeyRound, FolderOpen, HardDrive } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
 import { useConfirm } from '@/components/ConfirmModal'
@@ -149,6 +149,17 @@ export function Settings() {
     const timer = setTimeout(() => setHighlightAssistant(false), 2200)
     return () => clearTimeout(timer)
   }, [pendingSection, clearPendingSection])
+
+  const [storage, setStorage] = useState<api.StorageInfo | null>(null)
+
+  useEffect(() => {
+    api.fetchStorage().then(setStorage).catch(() => {})
+  }, [])
+
+  const openStorage = async () => {
+    const result = await api.openStorageFolder().catch(() => ({ error: 'failed' }))
+    if (result.error) toast.error(result.error)
+  }
 
   const loadAgentStatus = useCallback(async () => {
     try {
@@ -562,6 +573,50 @@ C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe`}</pre>
           )}
         </div>
       </div>
+
+      {/* Where the data lives */}
+      {storage && (
+        <div className="px-6 py-6 border-b border-border">
+          <h3 className="text-sm font-semibold text-text mb-2 flex items-center gap-2">
+            <HardDrive size={15} className="text-text-secondary" />
+            {t('settings.storageSection')}
+          </h3>
+          <p className="text-xs text-text-muted mb-3 max-w-2xl leading-relaxed">
+            {t('settings.storageDesc')}
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <code className="flex-1 min-w-[240px] overflow-x-auto rounded-md border border-border bg-bg px-3 py-2 font-mono text-[11px] text-text">
+              {storage.path}
+            </code>
+            <button
+              onClick={openStorage}
+              className="inline-flex items-center gap-2 px-3 py-2 text-xs font-medium text-text-secondary border border-border rounded-md hover:bg-bg-hover transition-colors"
+            >
+              <FolderOpen size={13} />
+              {t('settings.storageOpen')}
+            </button>
+            <span className="text-[11px] text-text-muted">
+              {(storage.bytes / 1024 / 1024).toFixed(0)} MB
+            </span>
+          </div>
+
+          {storage.kind === 'legacy' && (
+            <div className="mt-3 rounded-md bg-warning-light/50 px-3 py-2.5 text-[11px] leading-relaxed text-text-secondary">
+              {t('settings.storageLegacy')}
+              {storage.standard_path && (
+                <div className="mt-1.5">
+                  <span className="text-text-muted">{t('settings.storageWouldBe')} : </span>
+                  <code className="font-mono">{storage.standard_path}</code>
+                </div>
+              )}
+            </div>
+          )}
+          {storage.kind === 'portable' && (
+            <p className="mt-2 text-[11px] text-text-muted">{t('settings.storagePortable')}</p>
+          )}
+        </div>
+      )}
 
       {/* Language */}
       <div className="px-6 py-6 border-b border-border">
