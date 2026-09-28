@@ -27,6 +27,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
   const [rateLimited, setRateLimited] = useState(false)
   const [fetchingProfile, setFetchingProfile] = useState(false)
   const [profileResult, setProfileResult] = useState<{ display_name: string; username: string } | null>(null)
+  const [profileStats, setProfileStats] = useState<api.ProfileStats | null>(null)
 
   const handleSaveCredentials = async () => {
     if (!username.trim() || !password.trim()) {
@@ -90,6 +91,12 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
       const result = await api.fetchProfileFromX()
       if (result.success) {
         setProfileResult({ display_name: result.display_name || '', username: result.username || '' })
+        // The same read My Profile does after its Refresh: the import already
+        // wrote the profile and the first follower snapshot, so this just brings
+        // them back so the step can show what it actually imported.
+        try {
+          setProfileStats(await api.fetchProfileStats())
+        } catch { /* the import still succeeded; only the preview is missing */ }
         toast.success(t('setup.profileSuccess'))
       } else {
         toast.error(result.error || t('settings.errorUnknown'))
@@ -313,6 +320,22 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
                       <CheckCircle2 size={14} className="text-green-600 dark:text-green-400" />
                     </div>
                     <span className="text-xs text-text-muted">@{profileResult.username}</span>
+                    {profileStats && (
+                      <div className="mt-0.5 flex items-center gap-3 text-[11px] text-text-muted">
+                        <span>
+                          <span className="font-medium text-text-secondary">
+                            {profileStats.profile.followers_count.toLocaleString()}
+                          </span>{' '}
+                          {t('profile.followers')}
+                        </span>
+                        <span>
+                          <span className="font-medium text-text-secondary">
+                            {profileStats.profile.following_count.toLocaleString()}
+                          </span>{' '}
+                          {t('profile.following')}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (

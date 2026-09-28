@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import {
   Bot, Send, Square, RotateCcw, Loader2, Wrench, AlertCircle,
   ShieldCheck, Zap, CheckCircle2,
-  Check, X, CalendarClock, Image as ImageIcon, Trash2, Globe, GlobeLock,
+  Check, X, CalendarClock, Image as ImageIcon, Trash2, Globe, GlobeLock, Copy,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
@@ -10,6 +10,7 @@ import { useSettings } from '@/contexts/SettingsContext'
 import { useNavigation } from '@/contexts/NavigationContext'
 import { useAgent } from '@/contexts/AgentContext'
 import { AgentSetup } from '@/components/AgentSetup'
+import { copyText } from '@/lib/clipboard'
 
 /** Display only. The transcript and the running turn live in AgentContext, so
  *  switching tabs mid-answer neither loses the conversation nor stops it. */
@@ -36,6 +37,11 @@ export function Agent() {
 
   const changeWeb = async (enabled: boolean) => {
     if (!(await setWeb(enabled))) toast.error(t('common.serverError'))
+  }
+
+  const copy = async (text: string) => {
+    if (await copyText(text)) toast.success(t('common.copied'))
+    else toast.error(t('common.copyFailed'))
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -174,10 +180,17 @@ export function Agent() {
             }
             if (entry.kind === 'assistant') {
               return (
-                <div key={index} className="flex justify-start">
+                <div key={index} className="group flex items-start justify-start gap-1.5">
                   <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-sm border border-border bg-bg-secondary px-4 py-2.5 text-[13px] leading-relaxed text-text">
                     {entry.text}
                   </div>
+                  <button
+                    onClick={() => copy(entry.text)}
+                    title={t('common.copy')}
+                    className="mt-1.5 shrink-0 rounded-md p-1.5 text-text-muted opacity-0 transition-opacity hover:bg-bg-hover hover:text-text group-hover:opacity-100 focus:opacity-100"
+                  >
+                    <Copy size={12} />
+                  </button>
                 </div>
               )
             }
@@ -220,9 +233,20 @@ export function Agent() {
                       </span>
                     </div>
 
-                    <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-text">
-                      {p.text || <span className="italic text-text-muted">{t('agent.proposalNoText')}</span>}
-                    </p>
+                    <div className="flex items-start gap-1.5">
+                      <p className="min-w-0 flex-1 whitespace-pre-wrap text-[13px] leading-relaxed text-text">
+                        {p.text || <span className="italic text-text-muted">{t('agent.proposalNoText')}</span>}
+                      </p>
+                      {p.text && (
+                        <button
+                          onClick={() => copy(p.text)}
+                          title={t('common.copy')}
+                          className="shrink-0 rounded-md p-1.5 text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
+                        >
+                          <Copy size={12} />
+                        </button>
+                      )}
+                    </div>
 
                     {(p.scheduledAt || p.media) && (
                       <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-text-muted">

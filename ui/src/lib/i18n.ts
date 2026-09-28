@@ -117,6 +117,8 @@ const translations = {
   'common.retry': { fr: 'Réessayer', en: 'Retry' },
   'common.reset': { fr: 'Reset', en: 'Reset' },
   'common.copy': { fr: 'Copier', en: 'Copy' },
+  'common.copied': { fr: 'Copié', en: 'Copied' },
+  'common.copyFailed': { fr: 'Copie impossible', en: 'Could not copy' },
   'common.refresh': { fr: 'Rafraîchir', en: 'Refresh' },
   'common.serverError': { fr: 'Erreur serveur', en: 'Server error' },
   'common.connectionError': { fr: 'Erreur de connexion', en: 'Connection error' },

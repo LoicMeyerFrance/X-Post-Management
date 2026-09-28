@@ -17,6 +17,7 @@ import { Agent } from './pages/Agent'
 import { About } from './pages/About'
 import { Loader2, Coffee } from 'lucide-react'
 import * as api from './lib/api'
+import { installCopyShortcut } from './lib/clipboard'
 
 // Profile is the only page pulling in the charting library: load it on demand
 // so it stays out of the bundle the app parses at startup.
@@ -37,6 +38,10 @@ function AppContent() {
   const { configured, recheckConfig, recheckConnection } = useSettings()
   const [setupComplete, setSetupComplete] = useState<boolean | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+
+  // The desktop shell disables the browser's own copy shortcut, so the app
+  // provides one. Installed once, for the whole interface.
+  useEffect(() => installCopyShortcut(), [])
 
   // Load setupComplete from server preferences (localStorage doesn't persist in pywebview)
   useEffect(() => {
