@@ -337,6 +337,63 @@ def test_agent_key_handling():
     check('cleared key is not passed to the child', 'ANTHROPIC_API_KEY' not in env)
 
 
+def test_web_access():
+    """Looking things up is opt-in, and grants the web tools only."""
+    section('web access')
+
+    fake_cli = os.path.join(TEST_HOME, 'claude-fake')
+    agent.set_api_key('')
+
+    # Off: no built-in tool of any kind.
+    argv = agent.build_command('hi', cli_path=fake_cli, version=(2, 1, 283))
+    check('off by default: every built-in is dropped',
+          argv[argv.index('--tools') + 1] == '', argv[argv.index('--tools') + 1])
+    allowed = argv[argv.index('--allowedTools') + 1].split(',')
+    check('no web tool is pre-approved',
+          not any(name in ('WebSearch', 'WebFetch') for name in allowed), allowed)
+    prompt = argv[argv.index('--append-system-prompt') + 1]
+    check('the agent is told it has no web access',
+          'no web access' in prompt, prompt[-160:])
+    check('and told not to assert unverified facts',
+          'as if you had checked it' in prompt, prompt[-160:])
+
+    # On: the two web tools, and still nothing else.
+    argv = agent.build_command('hi', cli_path=fake_cli, version=(2, 1, 283),
+                               web_access=True)
+    tools = argv[argv.index('--tools') + 1].split(',')
+    check('on: the web tools are available', sorted(tools) == ['WebFetch', 'WebSearch'],
+          tools)
+    for forbidden in ('Bash', 'Read', 'Write', 'Edit', 'Task', 'Glob', 'Grep'):
+        check(f'{forbidden} is still not granted', forbidden not in tools, tools)
+
+    allowed = argv[argv.index('--allowedTools') + 1].split(',')
+    # Both need permission by default; available but unapproved would be denied.
+    check('WebSearch is pre-approved', 'WebSearch' in allowed, allowed)
+    check('WebFetch is pre-approved', 'WebFetch' in allowed, allowed)
+    check('the app tools are still there', 'mcp__xpost__create_post' in allowed, allowed)
+    check('publishing is still not granted in manual mode',
+          'mcp__xpost__publish_now' not in allowed, allowed)
+
+    prompt = argv[argv.index('--append-system-prompt') + 1]
+    check('the agent is told to check before writing',
+          'check a claim before it goes into a post' in prompt, prompt[-200:])
+    check('and to say when a search settles nothing',
+          'settles nothing' in prompt, prompt[-200:])
+    check('it is still told it has no shell or files',
+          'no shell, no file access' in prompt, prompt[-200:])
+
+    # The two switches are independent.
+    argv = agent.build_command('hi', auto=True, cli_path=fake_cli, version=(2, 1, 283))
+    check('auto mode alone does not grant the web',
+          argv[argv.index('--tools') + 1] == '', argv[argv.index('--tools') + 1])
+    argv = agent.build_command('hi', auto=False, cli_path=fake_cli,
+                               version=(2, 1, 283), web_access=True)
+    check('web access alone does not grant publishing',
+          '--permission-mode' not in argv, argv)
+    check('and still denies the publish tools outright',
+          'mcp__xpost__publish_now' in argv[argv.index('--disallowedTools') + 1])
+
+
 def test_setup_flow():
     """Installing and signing in without the user opening a terminal."""
     section('guided setup')
@@ -473,6 +530,20 @@ def test_agent_routes(client):
 
     r = client.post('/api/agent/auto', json={}, headers=LOCAL)
     check('auto endpoint rejects a payload without the flag', r.status_code == 400, r.status_code)
+
+    r = client.post('/api/agent/web', json={'web_access': True}, headers=LOCAL)
+    check('web access can be allowed', r.get_json().get('web_access') is True, r.get_json())
+    check('and is stored server-side', appmod.agent_web_access() is True)
+    check('status reports it',
+          client.get('/api/agent/status', headers=LOCAL).get_json().get('web_access') is True)
+    r = client.post('/api/agent/web', json={'web_access': False}, headers=LOCAL)
+    check('web access can be refused again', r.get_json().get('web_access') is False)
+    check('and that is the stored state', appmod.agent_web_access() is False)
+    r = client.post('/api/agent/web', json={}, headers=LOCAL)
+    check('web endpoint rejects a payload without the flag', r.status_code == 400, r.status_code)
+    r = client.post('/api/agent/web', json={'web_access': True},
+                    headers={'Host': '127.0.0.1:5000', 'Origin': 'https://evil.com'})
+    check('cross-origin cannot grant web access', r.status_code == 403, r.status_code)
 
     # The child is told where to call back. Hardcoding the default port breaks
     # every install where 5000 was busy and pick_port() chose something else.
@@ -747,6 +818,7 @@ def main():
     test_mcp_multipart()
     test_agent_command()
     test_agent_key_handling()
+    test_web_access()
     test_setup_flow()
     test_session_store()
     test_failure_messages()

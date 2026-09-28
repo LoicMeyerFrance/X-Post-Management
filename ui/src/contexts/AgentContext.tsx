@@ -50,6 +50,7 @@ interface AgentState {
   stop: () => Promise<void>
   newConversation: () => Promise<void>
   setAuto: (enabled: boolean) => Promise<boolean>
+  setWeb: (enabled: boolean) => Promise<boolean>
   refreshStatus: (silent?: boolean) => Promise<void>
   /** Answer one proposal. `index` is its position in `entries`. */
   actOnProposal: (index: number, action: ProposalAction) => Promise<void>
@@ -360,6 +361,16 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     }
   }, [publishProposal])
 
+  const setWeb = useCallback(async (enabled: boolean) => {
+    try {
+      const result = await api.setAgentWeb(enabled)
+      setStatus(prev => (prev ? { ...prev, web_access: result.web_access } : prev))
+      return true
+    } catch {
+      return false
+    }
+  }, [])
+
   const setAuto = useCallback(async (enabled: boolean) => {
     try {
       const result = await api.setAgentAuto(enabled)
@@ -373,7 +384,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   return (
     <AgentContext.Provider value={{
       status, entries, live, busy, draft, setDraft,
-      send, stop, newConversation, setAuto, refreshStatus, actOnProposal,
+      send, stop, newConversation, setAuto, setWeb, refreshStatus, actOnProposal,
     }}>
       {children}
     </AgentContext.Provider>

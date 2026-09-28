@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import {
   Bot, Send, Square, RotateCcw, Loader2, Wrench, AlertCircle,
   ShieldCheck, Zap, CheckCircle2,
-  Check, X, CalendarClock, Image as ImageIcon, Trash2,
+  Check, X, CalendarClock, Image as ImageIcon, Trash2, Globe, GlobeLock,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
@@ -18,7 +18,7 @@ export function Agent() {
   const { goTo } = useNavigation()
   const {
     status, entries, live, busy, draft, setDraft,
-    send, stop, newConversation, setAuto, refreshStatus, actOnProposal,
+    send, stop, newConversation, setAuto, setWeb, refreshStatus, actOnProposal,
   } = useAgent()
 
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -32,6 +32,10 @@ export function Agent() {
 
   const changeAuto = async (enabled: boolean) => {
     if (!(await setAuto(enabled))) toast.error(t('common.serverError'))
+  }
+
+  const changeWeb = async (enabled: boolean) => {
+    if (!(await setWeb(enabled))) toast.error(t('common.serverError'))
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -56,6 +60,7 @@ export function Agent() {
   }
 
   const auto = !!status?.auto_approve
+  const web = !!status?.web_access
 
   return (
     <div className="flex h-full flex-col">
@@ -98,6 +103,27 @@ export function Agent() {
               {t('agent.autoMode')}
             </button>
           </div>
+          <span className="text-xs font-medium text-text-secondary">{t('agent.webLabel')}</span>
+          <div className="inline-flex overflow-hidden rounded-md border border-border">
+            <button
+              onClick={() => changeWeb(false)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${
+                !web ? 'bg-text-secondary text-white' : 'text-text-secondary hover:bg-bg-hover'
+              }`}
+            >
+              <GlobeLock size={13} />
+              {t('agent.webOff')}
+            </button>
+            <button
+              onClick={() => changeWeb(true)}
+              className={`inline-flex items-center gap-1.5 border-l border-border px-3 py-1.5 text-xs font-medium transition-colors ${
+                web ? 'bg-accent text-white' : 'text-text-secondary hover:bg-bg-hover'
+              }`}
+            >
+              <Globe size={13} />
+              {t('agent.webOn')}
+            </button>
+          </div>
           {status && (
             <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-text-muted">
               <CheckCircle2 size={12} className="text-success" />
@@ -108,6 +134,9 @@ export function Agent() {
         </div>
         <p className={`mt-2 text-[11px] leading-relaxed ${auto ? 'text-warning' : 'text-text-muted'}`}>
           {auto ? t('agent.autoModeDesc') : t('agent.manualModeDesc')}
+        </p>
+        <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
+          {web ? t('agent.webOnDesc') : t('agent.webOffDesc')}
         </p>
       </div>
 

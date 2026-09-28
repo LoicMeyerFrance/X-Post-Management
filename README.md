@@ -156,13 +156,21 @@ does not include it; without one, put an Anthropic API key in
 **Settings → Assistant** instead.
 
 **It can only do what this app does.** The session is given the app's tools and
-nothing else — no shell, no filesystem, no web. `--allowedTools` alone would not
-achieve that: it pre-approves tools rather than restricting them, and Claude
-Code's read-only Bash commands run without a prompt *in every permission mode*.
-Two flags close it: `--tools ""` drops every built-in tool, and
+nothing else — no shell, no filesystem. `--allowedTools` alone would not achieve
+that: it pre-approves tools rather than restricting them, and Claude Code's
+read-only Bash commands run without a prompt *in every permission mode*. Two
+flags close it: `--tools ""` drops every built-in tool, and
 `--strict-mcp-config` ignores any MCP server configured elsewhere on the machine.
-Asked to read a file, run a command or open a URL, the agent answers that it has
-no tool for it — and it has none.
+Asked to read a file or run a command, the agent answers that it has no tool for
+it — and it has none.
+
+**Internet — off by default, one toggle.** With it off the agent cannot look
+anything up, and is told not to state an outside fact as if it had checked it: ask
+for a post about news it cannot confirm and it says so instead of inventing. Turn
+it on and it gains exactly two read-only tools, `WebSearch` and `WebFetch`, so it
+can verify a claim and cite where it came from before the text goes into a post.
+Nothing else comes with them — still no shell, no files — and `WebFetch` cannot
+reach a private address, so it cannot be turned back on this app's own API.
 
 **Approval — one tick per post.** Each post the agent creates appears in the
 conversation as a card with a ✓ and a ✗. Nothing reaches X until you press ✓,
@@ -172,7 +180,8 @@ which runs exactly the same publish path as the calendar; ✗ deletes the draft.
 |---|---|---|
 | Write drafts, schedule, edit, delete in the app | yes | yes |
 | Publish to X, schedule inside X | only when you press ✓ | the agent may do it itself |
-| Shell, filesystem, web access | **none** | **none** |
+| Shell and filesystem access | **none** | **none** |
+| Search and read the web | only with the Internet toggle on | only with the Internet toggle on |
 
 In manual mode the publish tools are not even in the agent's tool list, and the
 MCP server refuses them if called anyway — hiding a tool is a hint to the model,
@@ -249,8 +258,10 @@ port, and it calls the same loopback API with the same validation as the
 interface. Three further precautions:
 
 - **it has no tools but this app's.** The session runs with `--tools ""` and
-  `--strict-mcp-config`, so it carries no shell, no file access, no web fetch and
-  no MCP server from anywhere else — only `create_post`, `list_posts` and the rest;
+  `--strict-mcp-config`, so it carries no shell, no file access and no MCP server
+  from anywhere else — only `create_post`, `list_posts` and the rest. Turning the
+  Internet toggle on adds `WebSearch` and `WebFetch`, both read-only, and nothing
+  besides;
 - **it cannot publish unless you say so.** In manual mode the publish tools are
   absent from its tool list, denied at the client, *and* refused by the server if
   called anyway — hiding a tool is a hint to the model, not an access control;

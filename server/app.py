@@ -708,11 +708,15 @@ def api_duplicate_post(post_id):
 # preference allow-list below can name it.
 AGENT_AUTO_KEY = 'agentAutoApprove'
 
+# Whether the assistant may look things up online. Read-only web tools, opt-in,
+# so the "it can only do what this app does" guarantee holds unless asked.
+AGENT_WEB_KEY = 'agentWebAccess'
+
 # Anything the interface may remember. A key missing from here is rejected with a
 # 400, which the frontend swallows - so a toggle whose key was never added here
 # looks like it saved and silently forgets itself.
 PREFERENCE_KEYS = {'locale', 'theme', 'setupComplete', 'browserHintSeen',
-                   'calendarShowFromX', AGENT_AUTO_KEY}
+                   'calendarShowFromX', AGENT_AUTO_KEY, AGENT_WEB_KEY}
 
 
 @app.route('/api/settings/preferences', methods=['GET'])
@@ -811,6 +815,11 @@ def agent_auto_approve():
     return str(read_json_file(PREFERENCES_PATH).get(AGENT_AUTO_KEY, '')).lower() == 'true'
 
 
+def agent_web_access():
+    """True when the user allowed the assistant to search and fetch the web."""
+    return str(read_json_file(PREFERENCES_PATH).get(AGENT_WEB_KEY, '')).lower() == 'true'
+
+
 def _api_base():
     """The URL the MCP child should call back on: this very server.
 
@@ -829,6 +838,7 @@ def _api_base():
 def api_agent_status():
     info = agent.status()
     info['auto_approve'] = agent_auto_approve()
+    info['web_access'] = agent_web_access()
     info['running'] = agent.is_running()
     return jsonify(info)
 
@@ -890,6 +900,20 @@ def api_agent_login():
     return jsonify({'started': ok, 'detail': detail}), (200 if ok else 500)
 
 
+@app.route('/api/agent/web', methods=['POST'])
+def api_agent_web():
+    """Allow or refuse the assistant's read-only web tools."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or 'web_access' not in data:
+        return jsonify({'error': 'Expected {"web_access": true|false}'}), 400
+    enabled = bool(data['web_access'])
+    prefs = read_json_file(PREFERENCES_PATH)
+    prefs[AGENT_WEB_KEY] = 'true' if enabled else 'false'
+    write_json_file(PREFERENCES_PATH, prefs)
+    logger.info("Assistant web access %s", 'allowed' if enabled else 'refused')
+    return jsonify({'web_access': enabled})
+
+
 @app.route('/api/agent/stop', methods=['POST'])
 def api_agent_stop():
     return jsonify({'stopped': agent.stop()})
@@ -914,11 +938,15 @@ def api_agent_chat():
     if not message:
         return jsonify({'error': 'Message is empty'}), 400
 
+    # Both come from the stored preference, never from the request body: a
+    # per-call flag would let a caller grant itself more than the user chose.
     auto = agent_auto_approve()
+    web = agent_web_access()
     fresh = bool(data.get('new_conversation'))
 
     try:
-        events = agent.stream(message, auto=auto, api_base=_api_base(), resume=not fresh)
+        events = agent.stream(message, auto=auto, api_base=_api_base(),
+                              resume=not fresh, web_access=web)
     except agent.AgentError as exc:
         return jsonify({'error': str(exc)}), 400
 
@@ -1288,7 +1316,11 @@ def main():
 
     global _webview_window
     threading.Thread(target=run_server, daemon=True).start()
-    _webview_window = webview.create_window('X Post Management', url, width=1200, height=800)
+    # text_select defaults to False in pywebview, which makes the whole interface
+    # unselectable - so a post's text could not be copied out of the app at all.
+    _webview_window = webview.create_window('X Post Management', url,
+                                            width=1200, height=800,
+                                            text_select=True)
     gui_backend = 'edgechromium' if platform.system() == 'Windows' else None
     try:
         webview.start(gui=gui_backend)

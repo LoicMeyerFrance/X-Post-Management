@@ -33,6 +33,24 @@
     line-height: 1.5;
   }
 
+  /* Text is selectable so a post can be copied out of the app (pywebview is
+     given text_select=True for the same reason). Controls are not: dragging
+     across a row would otherwise highlight every button label in it. */
+  button,
+  [role="button"],
+  label,
+  select {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* An explicit highlight: the platform default is unreadable on the dark
+     background. */
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+    color: var(--color-text);
+  }
+
   .dark {
     --color-bg: #0f172a;
     --color-bg-secondary: #1e293b;

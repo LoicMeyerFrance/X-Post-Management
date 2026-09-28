@@ -350,6 +350,8 @@ export interface AgentStatus {
   ready: boolean
   running: boolean
   auto_approve: boolean
+  /** Whether the agent may search and fetch the web. */
+  web_access: boolean
   session_id: string
   /** The exact install command, shown before anything is run. */
   install_command: string
@@ -393,6 +395,15 @@ export async function setAgentAuto(autoApprove: boolean): Promise<{ auto_approve
     body: JSON.stringify({ auto_approve: autoApprove }),
   })
   return handleResponse<{ auto_approve: boolean }>(res)
+}
+
+export async function setAgentWeb(webAccess: boolean): Promise<{ web_access: boolean }> {
+  const res = await fetch(`${BASE}/api/agent/web`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ web_access: webAccess }),
+  })
+  return handleResponse<{ web_access: boolean }>(res)
 }
 
 export async function stopAgent(): Promise<{ stopped: boolean }> {

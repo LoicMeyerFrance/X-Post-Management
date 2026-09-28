@@ -377,9 +377,20 @@ def mcp_config(api_base, allow_publish):
     }}}
 
 
-def _tool_names(allow_publish):
+# The only built-ins ever handed to the agent, and only when the user asks for
+# them. Both are read-only, and WebFetch cannot reach a private address, so
+# neither can be turned back on this app's own loopback API.
+WEB_TOOLS = ('WebSearch', 'WebFetch')
+
+
+def _tool_names(allow_publish, web_access=False):
     names = list(DRAFT_TOOLS) + (list(PUBLISH_TOOLS) if allow_publish else [])
-    return [f'mcp__{MCP_SERVER_NAME}__{name}' for name in names]
+    out = [f'mcp__{MCP_SERVER_NAME}__{name}' for name in names]
+    # Both need permission by default, so being available is not enough - without
+    # this they would be denied on use.
+    if web_access:
+        out += list(WEB_TOOLS)
+    return out
 
 
 SYSTEM_PROMPT = (
@@ -389,8 +400,23 @@ SYSTEM_PROMPT = (
     'When the user asks for several tweets, call create_post once per tweet. '
     'Times are the machine\'s local time and carry no timezone suffix. '
     'Keep replies short: say what you did and name the posts by id. '
-    'You have no tools beyond these: no shell, no files, no web. If a request '
-    'needs something else, say so plainly instead of improvising.'
+    'If a request needs something you have no tool for, say so plainly instead '
+    'of improvising.'
+)
+
+# Whether the agent can look things up. Off, it has no way to reach anything but
+# this app; on, it gains read-only web tools and nothing else.
+NO_WEB_TAIL = (
+    ' You have no shell, no file access and no web access. Never state a fact '
+    'about the outside world as if you had checked it.'
+)
+
+WEB_TAIL = (
+    ' You can search the web and fetch a page, and nothing else beyond that: no '
+    'shell, no file access. Use them to check a claim before it goes into a post '
+    'rather than guessing - a wrong fact published under the user\'s name is worse '
+    'than a slower answer. Say where a figure came from, and say so plainly when a '
+    'search settles nothing.'
 )
 
 # What happens to a post after create_post differs by mode, and the agent has to
@@ -411,7 +437,7 @@ AUTO_TAIL = (
 
 
 def build_command(prompt, session_id='', auto=False, api_base='http://127.0.0.1:5000',
-                  cli_path=None, version=None):
+                  cli_path=None, version=None, web_access=False):
     """The argv for one turn. Raises AgentError when the CLI is missing."""
     cli_path = cli_path or find_cli()
     if not cli_path:
@@ -447,13 +473,15 @@ def build_command(prompt, session_id='', auto=False, api_base='http://127.0.0.1:
     #   --strict-mcp-config  ignores MCP servers configured globally or per
     #                        project, so no other tools can slip into the session.
     #
-    # What is left is exactly the xpost tools: the agent can do what this app
-    # does, and nothing else.
-    argv += ['--tools', '']
+    # What is left is exactly the xpost tools, plus the two read-only web tools
+    # when the user has asked for them. Naming them in --tools is a whitelist, not
+    # a relaxation: Bash, Read, Write and the rest stay out either way.
+    argv += ['--tools', ','.join(WEB_TOOLS) if web_access else '']
     argv.append('--strict-mcp-config')
 
-    argv += ['--allowedTools', ','.join(_tool_names(auto))]
-    argv += ['--append-system-prompt', SYSTEM_PROMPT + (AUTO_TAIL if auto else MANUAL_TAIL)]
+    argv += ['--allowedTools', ','.join(_tool_names(auto, web_access))]
+    tail = (AUTO_TAIL if auto else MANUAL_TAIL) + (WEB_TAIL if web_access else NO_WEB_TAIL)
+    argv += ['--append-system-prompt', SYSTEM_PROMPT + tail]
 
     if auto:
         argv += ['--permission-mode', 'auto']
@@ -545,7 +573,8 @@ def _work_dir():
     return work
 
 
-def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True):
+def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True,
+           web_access=False):
     """Run one turn, yielding the CLI's stream-json events as dicts.
 
     Also yields a few synthetic events of our own, tagged `xpm`, for errors the
@@ -560,10 +589,11 @@ def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True):
             raise AgentError('The assistant is already working on something. '
                              'Wait for it to finish, or stop it.')
         session_id = load_session_id() if resume else ''
-        argv = build_command(prompt, session_id=session_id, auto=auto, api_base=api_base)
+        argv = build_command(prompt, session_id=session_id, auto=auto,
+                             api_base=api_base, web_access=web_access)
 
-        logger.info("Agent turn starting (auto=%s, resume=%s, auth=%s)",
-                    auto, bool(session_id), auth_mode())
+        logger.info("Agent turn starting (auto=%s, web=%s, resume=%s, auth=%s)",
+                    auto, web_access, bool(session_id), auth_mode())
         try:
             process = subprocess.Popen(
                 argv,
