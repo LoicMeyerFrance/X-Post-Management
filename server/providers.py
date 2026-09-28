@@ -110,7 +110,12 @@ PROVIDERS = {
             'other': 'npm install -g @google/gemini-cli',
         },
         'docs': 'https://github.com/google-gemini/gemini-cli',
-        'plan_note': 'Sign in with a Google account, or set GEMINI_API_KEY.',
+        # Observed with CLI 0.61.0 and a personal Google account: the OAuth
+        # sign-in succeeds and Google then refuses the client with
+        # IneligibleTierError, pointing individuals at its Antigravity
+        # products. So the card leads with the route that works.
+        'plan_note': ('Needs a Gemini API key in GEMINI_API_KEY. A personal '
+                      'Google sign-in is currently refused by Google itself.'),
     },
     CODEX: {
         'id': CODEX,

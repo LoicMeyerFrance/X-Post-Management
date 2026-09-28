@@ -692,6 +692,147 @@ def test_packaged_build_points_every_agent_at_itself():
     check('with the server folder on the path',
           server['env'].get('PYTHONPATH', '').endswith('server'), server['env'])
 
+
+def _fake_home(root):
+    """Point agent's expanduser at a throwaway home, restoring it after."""
+    real = agent.os.path.expanduser
+    agent.os.path.expanduser = lambda path: (
+        path.replace('~', root, 1) if path.startswith('~') else path)
+    return real
+
+
+def _write_gemini_home(root, creds=True, selected='oauth-personal',
+                       email='someone@example.com'):
+    home = os.path.join(root, '.gemini')
+    os.makedirs(home, exist_ok=True)
+    if creds:
+        io.open(os.path.join(home, 'oauth_creds.json'), 'w',
+                encoding='utf-8').write('{"access_token": "x"}')
+    if selected:
+        io.open(os.path.join(home, 'settings.json'), 'w', encoding='utf-8').write(
+            json.dumps({'security': {'auth': {'selectedType': selected}}}))
+    if email:
+        io.open(os.path.join(home, 'google_accounts.json'), 'w',
+                encoding='utf-8').write(json.dumps({'active': email, 'old': []}))
+    return home
+
+
+def test_gemini_sign_in_is_read_from_disk():
+    """Gemini has no status command, so its sign-in is two files agreeing.
+
+    Reporting an installed binary as signed in is what sent the user into a chat
+    that failed on its first message.
+    """
+    section('Gemini: signed in, or only installed')
+
+    root = tempfile.mkdtemp(prefix='xpm-gemhome-')
+    real_expand = _fake_home(root)
+    saved = {name: os.environ.pop(name, None) for name in agent.GEMINI_AUTH_VARS}
+    try:
+        status = agent.auth_status('gemini')
+        check('nothing on disk is not signed in',
+              status['logged_in'] is False and status['known'] is True, status)
+
+        # Credentials alone are not enough: without a selected auth type the CLI
+        # refuses with "Please set an Auth method".
+        _write_gemini_home(root, creds=True, selected='', email='')
+        status = agent.auth_status('gemini')
+        check('credentials with no chosen method is not signed in',
+              status['logged_in'] is False, status)
+
+        _write_gemini_home(root, creds=True, selected='oauth-personal',
+                           email='someone@example.com')
+        status = agent.auth_status('gemini')
+        check('credentials and a chosen method is signed in',
+              status['logged_in'] is True, status)
+        check('and the account is named',
+              status['email'] == 'someone@example.com', status)
+
+        # A key beats anything on disk, and works with no sign-in at all.
+        shutil.rmtree(os.path.join(root, '.gemini'), ignore_errors=True)
+        os.environ['GEMINI_API_KEY'] = 'AIza-not-a-real-key'
+        status = agent.auth_status('gemini')
+        check('a key counts as signed in', status['logged_in'] is True, status)
+        check('and says so', status['method'] == 'GEMINI_API_KEY', status)
+    finally:
+        agent.os.path.expanduser = real_expand
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_each_agent_is_asked_about_itself():
+    section('no agent answers for another')
+
+    # Claude Code being signed in must not make a Gemini session look ready.
+    root = tempfile.mkdtemp(prefix='xpm-gemhome2-')
+    real_expand = _fake_home(root)
+    saved = {name: os.environ.pop(name, None) for name in agent.GEMINI_AUTH_VARS}
+    real_status = agent._claude_auth_status
+    agent._claude_auth_status = lambda: {'known': True, 'logged_in': True,
+                                         'email': 'me@example.com',
+                                         'plan': 'max'}
+    try:
+        check('Claude Code says it is signed in',
+              agent.auth_status('claude')['logged_in'] is True)
+        check('Gemini is not, on the same machine',
+              agent.auth_status('gemini')['logged_in'] is False)
+    finally:
+        agent._claude_auth_status = real_status
+        agent.os.path.expanduser = real_expand
+        for name, value in saved.items():
+            if value is not None:
+                os.environ[name] = value
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_sign_in_runs_the_right_command():
+    section('the sign-in button starts the right agent')
+
+    # Running Claude Code's sign-in for a Gemini user is worse than running
+    # none: it succeeds, and changes nothing about the run that then fails.
+    check('Claude Code has its own command',
+          agent.login_hint('claude') == 'claude auth login')
+    check('Codex has a login subcommand', agent.login_hint('codex') == 'codex login')
+    # Gemini has none - it asks on its first interactive start.
+    check('Gemini is just started', agent.login_hint('gemini') == 'gemini')
+    check('all three differ', len({agent.login_hint(p)
+                                   for p in ('claude', 'gemini', 'codex')}) == 3)
+
+    real_find = agent.find_cli
+    agent.find_cli = lambda *a, **k: ''
+    try:
+        ok, detail = agent.start_login('gemini')
+        check('with nothing installed it refuses', ok is False, detail)
+        check('and names the agent it means', 'Gemini' in detail, detail)
+    finally:
+        agent.find_cli = real_find
+
+
+def test_failure_names_the_agent_that_failed():
+    section('a failure points at the right thing to fix')
+
+    for provider_id, label in (('claude', 'Claude Code'), ('gemini', 'Gemini CLI'),
+                               ('codex', 'Codex')):
+        message = agent._explain_failure(1, 'Not logged in', provider_id, '')
+        check(f'{provider_id} is named', label in message, message)
+        check(f'{provider_id} is told the command that signs it in',
+              agent.login_hint(provider_id) in message, message)
+
+    # Google refuses a personal account outright: signing in again cannot fix
+    # it, so it must not be reported as being signed out.
+    refused = ('Error authenticating: IneligibleTierError: This client is no '
+               'longer supported for Gemini Code Assist for individuals.')
+    message = agent._explain_failure(1, refused, 'gemini', '')
+    check('a refused tier is not called a missing sign-in',
+          'not signed in' not in message.lower(), message)
+    check('and the way forward is named', 'GEMINI_API_KEY' in message, message)
+    check('without a stack trace in it',
+          'at throwIneligible' not in message and len(message) < 400, message)
+
 def main():
     print('=' * 62)
     print('  Agent provider tests')
@@ -712,6 +853,10 @@ def main():
     test_codex_error_item_is_shown()
     test_codex_sequence_ends_once_and_at_the_end()
     test_packaged_build_points_every_agent_at_itself()
+    test_gemini_sign_in_is_read_from_disk()
+    test_each_agent_is_asked_about_itself()
+    test_sign_in_runs_the_right_command()
+    test_failure_names_the_agent_that_failed()
     test_no_provider_leaks_a_dict_at_the_user()
     test_api(client)
 

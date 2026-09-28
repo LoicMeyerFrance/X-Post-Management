@@ -21,6 +21,7 @@ user's own API key and the subscription path only works for whoever is signed in
 on this machine.
 """
 
+import io
 import json
 import logging
 import os
@@ -197,12 +198,94 @@ def install_command():
     return argv, shown
 
 
-def auth_status():
-    """Whether the CLI is signed in, straight from `claude auth status`.
+# What tells Gemini it may talk to Google at all. Any one of these is enough,
+# and without one it refuses before reaching the model.
+GEMINI_AUTH_VARS = ('GEMINI_API_KEY', 'GOOGLE_API_KEY',
+                    'GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_GENAI_USE_GCA')
+
+
+def auth_status(provider_id=None):
+    """Whether the chosen CLI is signed in.
+
+    Each one answers differently and none answers for the others: Claude Code
+    has `auth status --json`, Codex has `login status` in prose, and Gemini has
+    no such command at all - its sign-in is a file in ~/.gemini. Asking Claude
+    Code about a Gemini run is how the tab came to call a Gemini session ready
+    and then fail on its first message.
 
     Costs nothing and calls no model, unlike inferring it from a failed run.
     """
-    path = find_cli()
+    provider = providers.normalise(provider_id or current_provider())
+    if provider == providers.GEMINI:
+        return _gemini_auth_status()
+    if provider == providers.CODEX:
+        return _codex_auth_status()
+    return _claude_auth_status()
+
+
+def _gemini_auth_status():
+    """Gemini keeps its sign-in on disk; there is no command to ask.
+
+    Both parts are needed: the credentials, and the auth type that says to use
+    them. A run with the credentials but no selected type refuses with "Please
+    set an Auth method".
+    """
+    for name in GEMINI_AUTH_VARS:
+        if str(os.environ.get(name, '')).strip():
+            return {'known': True, 'logged_in': True, 'method': name}
+
+    home = os.path.join(os.path.expanduser('~'), '.gemini')
+    if not os.path.exists(os.path.join(home, 'oauth_creds.json')):
+        return {'known': True, 'logged_in': False}
+
+    selected = ''
+    try:
+        with io.open(os.path.join(home, 'settings.json'), encoding='utf-8') as fh:
+            data = json.load(fh)
+        auth = (data.get('security') or {}).get('auth') or {}
+        selected = str(auth.get('selectedType') or data.get('selectedAuthType') or '')
+    except (OSError, ValueError, AttributeError):
+        selected = ''
+    if not selected:
+        return {'known': True, 'logged_in': False}
+
+    email = ''
+    try:
+        with io.open(os.path.join(home, 'google_accounts.json'), encoding='utf-8') as fh:
+            accounts = json.load(fh)
+        if isinstance(accounts, dict):
+            email = str(accounts.get('active') or '')
+    except (OSError, ValueError):
+        pass
+    return {'known': True, 'logged_in': True, 'method': selected, 'email': email}
+
+
+def _codex_auth_status():
+    """`codex login status` prints prose and exits 0 whichever way it goes."""
+    path = find_cli(providers.CODEX)
+    if not path:
+        return {'known': False, 'logged_in': False}
+    try:
+        result = subprocess.run([path, 'login', 'status'], capture_output=True,
+                                text=True, timeout=60, encoding='utf-8',
+                                errors='replace', **_no_window())
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Could not read the Codex login status: %s", exc)
+        return {'known': False, 'logged_in': False}
+
+    text = ((result.stdout or '') + '\n' + (result.stderr or '')).strip()
+    lowered = text.lower()
+    if not text or 'not logged in' in lowered or 'no credentials' in lowered:
+        return {'known': True, 'logged_in': False}
+    if result.returncode != 0:
+        return {'known': False, 'logged_in': False}
+    found = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', text)
+    return {'known': True, 'logged_in': True, 'method': 'chatgpt',
+            'email': found.group(0) if found else ''}
+
+
+def _claude_auth_status():
+    path = find_cli(providers.CLAUDE)
     if not path:
         return {'known': False, 'logged_in': False}
     try:
@@ -259,19 +342,52 @@ def install():
     return True, output[-2000:]
 
 
-def start_login():
-    """Open the browser sign-in, in its own console window. Returns (ok, detail).
+def login_hint(provider_id):
+    """The command that signs this agent in, for a message or a fallback."""
+    provider = providers.normalise(provider_id)
+    if provider == providers.CODEX:
+        return 'codex login'
+    if provider == providers.GEMINI:
+        return 'gemini'            # it asks on its first interactive start
+    return 'claude auth login'
+
+
+def start_login(provider_id=None):
+    """Open the chosen CLI's sign-in, in its own console. Returns (ok, detail).
 
     Given its own console rather than a pipe: the sign-in prints a URL and waits,
     and a windowed app has no terminal to show that in. The user sees the prompt
     and can finish it, which is the whole point.
-    """
-    path = find_cli()
-    if not path:
-        return False, 'Claude Code is not installed yet.'
 
-    argv = [path, 'auth', 'login', '--claudeai']
+    Which command differs per agent, and running the wrong one is worse than
+    running none: this used to start Claude Code's sign-in however the user had
+    chosen Gemini.
+    """
+    provider = providers.normalise(provider_id or current_provider())
+    label = providers.get(provider)['label']
+    path = find_cli(provider)
+    if not path:
+        return False, f'{label} is not installed yet.'
+
+    cwd = None
+    if provider == providers.CODEX:
+        argv = [path, 'login']
+        done = 'A window opened to sign in to your OpenAI account.'
+    elif provider == providers.GEMINI:
+        # Gemini has no login command: it asks on its first interactive start.
+        # Run it from the home folder so the app's own workspace settings, which
+        # strip its tools, have nothing to do with signing in.
+        argv = [path]
+        cwd = os.path.expanduser('~')
+        done = ('A window opened. Choose "Login with Google" in it, then close '
+                'it once it says you are signed in.')
+    else:
+        argv = [path, 'auth', 'login', '--claudeai']
+        done = 'A window opened to sign in to your Claude account.'
+
     kwargs = {}
+    if cwd:
+        kwargs['cwd'] = cwd
     if sys.platform == 'win32':
         # Its own console window; CREATE_NO_WINDOW would hide the very prompt
         # the user has to answer.
@@ -279,13 +395,16 @@ def start_login():
     else:
         kwargs['start_new_session'] = True
 
+    # The Anthropic key is stripped for Claude Code only, where it would make
+    # the CLI offer to approve the key instead of opening the browser.
+    env = clean_env() if provider == providers.CLAUDE else dict(os.environ)
     try:
-        subprocess.Popen(argv, env=clean_env(), **kwargs)
+        subprocess.Popen(argv, env=env, **kwargs)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, (f'Could not start the sign-in: {exc}\n\n'
-                       'Open a terminal and run: claude auth login')
-    logger.info("Started Claude Code sign-in")
-    return True, 'A window opened to sign in to your Claude account.'
+                       f'Open a terminal and run: {login_hint(provider)}')
+    logger.info("Started %s sign-in", label)
+    return True, done
 
 
 def provider_list():
@@ -323,16 +442,17 @@ def status():
     path = find_cli(provider)
     version = cli_version(path, provider) if path else None
     mode = auth_mode()
-    # Only Claude Code reports its own sign-in state; for the others an
-    # installed binary is as much as can be said without spending a turn.
-    auth = (auth_status() if (path and provider == providers.CLAUDE)
-            else {'known': False, 'logged_in': bool(path)})
+    # Each agent is asked about its own account. Reporting an installed binary
+    # as "signed in" sent the user into a chat that failed on its first message.
+    auth = auth_status(provider) if path else {'known': False, 'logged_in': False}
     _, install_shown = install_command()
 
     # Ready means a turn can actually run: the binary is there, and either the
     # CLI is signed in or a key was supplied. Reporting "ready" on the binary
     # alone sent the user to a chat that failed on its first message.
-    ready = bool(path) and (auth.get('logged_in') or has_api_key())
+    # The stored key is an Anthropic one, so it makes only Claude Code ready.
+    ready = bool(path) and (auth.get('logged_in')
+                            or (has_api_key() and provider == providers.CLAUDE))
 
     return {
         'provider': provider,
@@ -865,7 +985,6 @@ def _explain_failure(code, stderr_text, provider_id=None, stdout_text=''):
 
     provider = providers.get(provider_id)
     label = provider['label']
-    binary = (provider.get('binaries') or ('claude',))[0]
     install = providers.install_command(provider['id'])
 
     # Both streams count. The reason a CLI could not start is prose, and which
@@ -874,7 +993,17 @@ def _explain_failure(code, stderr_text, provider_id=None, stdout_text=''):
                                        (stdout_text or '').strip()) if part)
     lowered = text.lower()
 
+    # Google refuses a personal Google account on this CLI: "IneligibleTierError
+    # ... no longer supported for Gemini Code Assist for individuals". Signing in
+    # again cannot fix that, so it must not be reported as being signed out.
+    if 'ineligibletier' in lowered or 'no longer supported' in lowered:
+        return (f'Google will not accept a personal Google account through '
+                f'{label}. Put a Gemini API key from Google AI Studio in the '
+                f'GEMINI_API_KEY environment variable and try again, or use a '
+                f'different agent.')
+
     signed_out = ('set an auth method' in lowered
+                  or 'error authenticating' in lowered
                   or 'not logged in' in lowered
                   or 'please sign in' in lowered
                   or 'authentication' in lowered
@@ -884,8 +1013,8 @@ def _explain_failure(code, stderr_text, provider_id=None, stdout_text=''):
         if provider['id'] == providers.CLAUDE and has_api_key():
             return (f'{label} rejected the API key. Check it in Settings, or '
                     f'remove it to use the login of the {label} on this machine.')
-        return (f'{label} is not signed in. Run "{binary}" once in a terminal '
-                f'and sign in, then try again.')
+        return (f'{label} is not signed in. Run "{login_hint(provider["id"])}" '
+                f'in a terminal and sign in, then try again.')
 
     if 'unknown option' in lowered or 'unknown argument' in lowered:
         return (f'This version of {label} does not accept one of the options '
