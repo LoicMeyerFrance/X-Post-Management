@@ -639,6 +639,59 @@ def test_codex_sequence_ends_once_and_at_the_end():
     check('the thread id is picked up',
           kept[0].get('session_id') == '01a0e962', kept[0])
 
+
+def test_packaged_build_points_every_agent_at_itself():
+    """In a frozen build there is no interpreter to run -m mcp_server.
+
+    The .exe re-runs itself with --mcp instead. Each provider writes its own
+    config file from the same payload, so all three have to inherit that - and
+    if one did not, the MCP server would fail to start for everyone using that
+    agent from the packaged app, which is exactly how this app broke once before.
+    """
+    section('the packaged build starts its own MCP server')
+
+    frozen_before = getattr(sys, 'frozen', None)
+    executable_before = sys.executable
+    sys.frozen = True
+    sys.executable = r'C:\Program Files\X Post Management\X Post Management.exe'
+    work = tempfile.mkdtemp(prefix='xpm-frozen-')
+    try:
+        config = agent.mcp_config('http://127.0.0.1:5000', False)
+        server = config['mcpServers']['xpost']
+        check('the exe re-runs itself', server['command'] == sys.executable, server)
+        check('with --mcp', server['args'] == ['--mcp'], server)
+        # PYTHONPATH would point at a source folder that is not in the bundle.
+        check('and no PYTHONPATH pointing at sources that are not there',
+              'PYTHONPATH' not in server['env'], server['env'])
+
+        providers.write_gemini_settings(work, config, False)
+        written = json.load(io.open(os.path.join(work, '.gemini', 'settings.json'),
+                                    encoding='utf-8'))
+        gemini = written['mcpServers']['xpost']
+        check('Gemini is told to run the exe', gemini['args'] == ['--mcp'], gemini)
+
+        home = providers.write_codex_config(work, config, False)
+        with io.open(os.path.join(home, 'config.toml'), 'rb') as handle:
+            codex = tomllib.load(handle)['mcp_servers']['xpost']
+        check('and so is Codex', codex['args'] == ['--mcp'], codex)
+        check('both name the same executable',
+              gemini['command'] == codex['command'] == sys.executable,
+              (gemini['command'], codex['command']))
+    finally:
+        sys.executable = executable_before
+        if frozen_before is None:
+            del sys.frozen
+        else:
+            sys.frozen = frozen_before
+        shutil.rmtree(work, ignore_errors=True)
+
+    # and development is unchanged: an interpreter plus the module
+    server = agent.mcp_config('http://127.0.0.1:5000', False)['mcpServers']['xpost']
+    check('development still runs the module',
+          server['args'] == ['-m', 'mcp_server'], server)
+    check('with the server folder on the path',
+          server['env'].get('PYTHONPATH', '').endswith('server'), server['env'])
+
 def main():
     print('=' * 62)
     print('  Agent provider tests')
@@ -658,6 +711,7 @@ def main():
     test_codex_config_is_one_it_accepts()
     test_codex_error_item_is_shown()
     test_codex_sequence_ends_once_and_at_the_end()
+    test_packaged_build_points_every_agent_at_itself()
     test_no_provider_leaks_a_dict_at_the_user()
     test_api(client)
 
