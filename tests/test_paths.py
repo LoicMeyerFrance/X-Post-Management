@@ -83,6 +83,16 @@ def test_cloud_detection():
     check("iCloud's mobile documents are synced",
           paths._is_cloud_synced(os.path.expanduser('~/Library/Mobile Documents/x')))
 
+    # The markers are lower case, and os.path.normcase only lowers a path on
+    # Windows - so relying on it silently disabled every check on macOS and
+    # Linux, which is where iCloud lives.
+    for variant in ('OneDrive', 'onedrive', 'ONEDRIVE', 'OneDRIVE'):
+        check(f'{variant} is recognised whatever its case',
+              paths._is_cloud_synced('/home/someone/' + variant + '/Documents'),
+              variant)
+    check('Mobile Documents is recognised in its real casing',
+          paths._is_cloud_synced('/Users/someone/Library/Mobile Documents/Docs'))
+
     saved = os.environ.get('OneDrive')
     os.environ['OneDrive'] = r'D:\Sync\MyCloud'
     try:
@@ -117,7 +127,11 @@ def test_resolution_order():
                   os.path.normcase(base) != os.path.normcase(exe_dir), base)
             check('it uses the standard location',
                   os.path.normcase(base) == os.path.normcase(paths.standard_data_dir()), base)
-            check('which is named after the app', paths.APP_FOLDER_NAME in base, base)
+            # The folder is named after the app, spelled the way each platform
+            # spells such things: Linux uses the XDG lower-case-and-dashes form.
+            expected_name = ('x-post-management' if sys.platform not in ('win32', 'darwin')
+                             else paths.APP_FOLDER_NAME)
+            check('which is named after the app', expected_name in base, (base, expected_name))
             check('and it reports itself as standard',
                   paths.describe_location()['kind'] == 'standard',
                   paths.describe_location())

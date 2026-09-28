@@ -50,13 +50,21 @@ def _is_cloud_synced(path):
     conflict copies, gigabytes of upload, and a database that can be corrupted
     mid-write. Worth avoiding even though it will not happen to everyone.
     """
-    normalised = os.path.normcase(os.path.abspath(path))
+    # Lowercased explicitly: os.path.normcase only does that on Windows, so
+    # relying on it left every marker below unmatched on macOS - where iCloud's
+    # "Library/Mobile Documents" is exactly the case this has to catch.
+    normalised = os.path.abspath(path).lower()
+
     onedrive = os.environ.get('OneDrive') or os.environ.get('OneDriveConsumer')
-    if onedrive and normalised.startswith(os.path.normcase(os.path.abspath(onedrive))):
+    if onedrive and normalised.startswith(os.path.abspath(onedrive).lower()):
         return True
+
     markers = ('onedrive', 'dropbox', 'google drive', 'icloud', 'mobile documents',
                'creative cloud files')
-    return any(marker in normalised.replace(os.sep, ' ') for marker in markers)
+    # Both separators, whatever this platform uses: a marker can be a whole path
+    # component ("Mobile Documents" is two words).
+    haystack = normalised.replace('\\', ' ').replace('/', ' ')
+    return any(marker in haystack for marker in markers)
 
 
 def standard_data_dir():
