@@ -8,11 +8,13 @@ server - and one that cannot be must not be selectable at all.
     python tests/test_providers.py
 """
 
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
+import tomllib
 
 TEST_HOME = tempfile.mkdtemp(prefix='xpm-providers-test-')
 os.environ['XPM_HOME'] = TEST_HOME
@@ -529,6 +531,114 @@ def test_no_provider_leaks_a_dict_at_the_user():
               isinstance(text, str) and '{' not in text and text.strip() != '',
               repr(text))
 
+
+# Copied from a real `codex exec --json` run against the config this app writes.
+# Codex reported the config problem as an item in the stream, not on stderr, and
+# then carried on - so an item like this must be shown without ending the turn.
+CODEX_CONFIG_COMPLAINT = {
+    'type': 'item.completed',
+    'item': {'id': 'item_0', 'type': 'error',
+             'message': 'Codex is ignoring 1 unrecognized configuration '
+                        'setting. Check for typos or deprecated settings.'},
+}
+
+
+def test_codex_config_is_one_it_accepts():
+    section('the Codex config holds only keys Codex knows')
+
+    work = tempfile.mkdtemp(prefix='xpm-codex-')
+    try:
+        home = providers.write_codex_config(
+            work,
+            {'mcpServers': {'xpost': {
+                'command': 'python', 'args': ['-m', 'mcp_server'],
+                'env': {'XPM_API_BASE': 'http://127.0.0.1:5000'}}}},
+            False)
+        path = os.path.join(home, 'config.toml')
+        raw = io.open(path, encoding='utf-8').read()
+
+        with io.open(path, 'rb') as handle:
+            parsed = tomllib.load(handle)
+        check('the config is valid TOML', isinstance(parsed, dict))
+
+        # Codex's [tools] table takes exactly these three. Anything else is
+        # reported to the user as an error on every single turn.
+        allowed = {'web_search', 'experimental_request_user_input', 'update_plan'}
+        extra = set(parsed.get('tools', {})) - allowed
+        check('no [tools] key Codex would reject', extra == set(), extra)
+        check('view_image is gone, it was never a real setting',
+              'view_image' not in raw, raw)
+
+        check('it still may not ask for approval nobody can give',
+              parsed['approval_policy'] == 'never', parsed)
+        check('and it still runs read-only', parsed['sandbox_mode'] == 'read-only',
+              parsed)
+        check('this app is the only MCP server',
+              list(parsed['mcp_servers']) == ['xpost'], parsed)
+        check('and it is required, so a broken one is not silently skipped',
+              parsed['mcp_servers']['xpost']['required'] is True, parsed)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_codex_error_item_is_shown():
+    section('a Codex error item reaches the user')
+
+    out = providers.translate_codex_event(CODEX_CONFIG_COMPLAINT)
+    check('it is not dropped', out is not None, out)
+    # It must not end the turn: Codex keeps working after one, and the answer
+    # would be discarded along with it.
+    check('and does not end the turn',
+          out['type'] == 'xpm' and out['subtype'] == 'notice', out)
+    check('and carries what Codex said',
+          'unrecognized configuration' in out['notice'], out)
+
+
+# The 14 events of a real `codex exec --json` run, in order, with no account
+# signed in. Codex retries a connection several times and only then gives up, so
+# the sequence is the point: the first "error" is not the end of anything.
+CODEX_REAL_SEQUENCE = (
+    [{'type': 'thread.started', 'thread_id': '01a0e962'},
+     {'type': 'turn.started'}]
+    + [{'type': 'error', 'message': f'Reconnecting... {n}/5 (unexpected status '
+                                    '401 Unauthorized)'} for n in (2, 3, 4, 5)]
+    + [{'type': 'item.completed',
+        'item': {'id': 'item_0', 'type': 'error',
+                 'message': 'Codex is ignoring 1 unrecognized setting.'}}]
+    + [{'type': 'error', 'message': f'Reconnecting... {n}/5 (unexpected status '
+                                    '401 Unauthorized)'} for n in (1, 2, 3, 4, 5)]
+    + [{'type': 'error', 'message': 'unexpected status 401 Unauthorized'},
+       {'type': 'turn.failed', 'error': {'message': 'Missing authentication.'}}]
+)
+
+
+def test_codex_sequence_ends_once_and_at_the_end():
+    section('a real Codex run, event by event')
+
+    translated = [providers.translate_codex_event(e) for e in CODEX_REAL_SEQUENCE]
+    kept = [e for e in translated if e is not None]
+
+    terminal = [e for e in kept if e.get('type') == 'result']
+    check('the turn ends exactly once', len(terminal) == 1, terminal)
+    check('and it ends as a failure', terminal[0]['subtype'] == 'error', terminal)
+    check('with the reason read out of its object',
+          terminal[0]['error'] == 'Missing authentication.', terminal[0])
+
+    # The first eleven errors are retries. Ending on the first one declared the
+    # turn dead while Codex was still working, and a retry usually succeeds.
+    check('the terminal event is the last one',
+          kept.index(terminal[0]) == len(kept) - 1, len(kept))
+
+    notices = [e for e in kept if e.get('subtype') == 'notice']
+    check('every retry is passed on as a notice', len(notices) == 11, len(notices))
+    check('including the config complaint',
+          any('unrecognized' in e['notice'] for e in notices), notices[:2])
+    check('and a retry reads as itself',
+          any('Reconnecting' in e['notice'] for e in notices), notices[:2])
+
+    check('the thread id is picked up',
+          kept[0].get('session_id') == '01a0e962', kept[0])
+
 def main():
     print('=' * 62)
     print('  Agent provider tests')
@@ -545,6 +655,9 @@ def main():
     test_event_translation()
     test_gemini_real_events()
     test_codex_real_events()
+    test_codex_config_is_one_it_accepts()
+    test_codex_error_item_is_shown()
+    test_codex_sequence_ends_once_and_at_the_end()
     test_no_provider_leaks_a_dict_at_the_user()
     test_api(client)
 

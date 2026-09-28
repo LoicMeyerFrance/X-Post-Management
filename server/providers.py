@@ -217,9 +217,13 @@ def write_codex_config(work_dir, mcp_config, allow_publish):
         'approval_policy = "never"',
         'sandbox_mode = "read-only"',
         '',
+        # Codex's [tools] table takes exactly three keys - web_search,
+        # experimental_request_user_input and update_plan. An unknown one is
+        # not ignored quietly: Codex reports it as an error item on every turn,
+        # which the user reads as the app being broken. view_image was in here
+        # and did nothing but that.
         '[tools]',
         'web_search = false',
-        'view_image = false',
         '',
         f'[mcp_servers.{server_name}]',
         'command = ' + toml_string(server['command']),
@@ -275,6 +279,13 @@ def translate_codex_event(event):
                 return None
             return {'type': 'assistant',
                     'message': {'content': [{'type': 'text', 'text': text}]}}
+        if item_type == 'error':
+            # Codex reports trouble as an item and keeps going; only
+            # turn.failed ends a turn. Ending it here would throw away the
+            # answer that still arrives, and dropping it leaves the user
+            # watching nothing happen.
+            return {'type': 'xpm', 'subtype': 'notice',
+                    'notice': _error_message(item, 'Codex reported a problem.')}
         if 'tool' in item_type or item_type == 'mcp_tool_call':
             name = str(_first(item, 'tool', 'name', 'tool_name', default=''))
             arguments = _first(item, 'arguments', 'input', 'args', default={})
@@ -301,11 +312,19 @@ def translate_codex_event(event):
         return {'type': 'result', 'subtype': 'success',
                 'result': _as_text(_first(event, 'text', 'output', default=''))}
 
-    if kind in ('turn.failed', 'error', 'thread.error'):
+    if kind in ('turn.failed', 'thread.error'):
         # turn.failed nests the reason in an object; reading the key straight
         # out would print a Python dict at the user.
         return {'type': 'result', 'subtype': 'error',
                 'error': _error_message(event, 'Codex failed')}
+
+    if kind == 'error':
+        # Not the end of anything. A real run emitted eleven of these -
+        # "Reconnecting... 2/5" and so on - before turn.failed finally came.
+        # Treating the first as terminal declared the turn dead while Codex was
+        # still retrying, and a retry that succeeds is the normal case.
+        return {'type': 'xpm', 'subtype': 'notice',
+                'notice': _error_message(event, 'Codex reported a problem.')}
 
     return None
 
