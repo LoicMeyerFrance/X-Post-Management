@@ -54,6 +54,8 @@ interface AgentState {
   refreshStatus: (silent?: boolean) => Promise<void>
   /** Answer one proposal. `index` is its position in `entries`. */
   actOnProposal: (index: number, action: ProposalAction) => Promise<void>
+  /** Take an edited post back into its card, so the tick sends what is shown. */
+  refreshProposal: (postId: number) => Promise<void>
 }
 
 const AgentContext = createContext<AgentState | null>(null)
@@ -156,6 +158,22 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       })
     }
   }, [patchProposal, publishProposal])
+
+  /** Re-read a post the user edited, so the card shows what will actually go out.
+   *
+   *  Without this the card would keep the text the agent wrote, and the tick
+   *  would publish the edit while the card still showed the original - the one
+   *  place where a stale preview would be actively misleading. */
+  const refreshProposal = useCallback(async (postId: number) => {
+    try {
+      const post = await api.fetchPost(postId)
+      patchProposal(postId, {
+        text: post.text || '',
+        scheduledAt: post.scheduled_at || null,
+        media: post.image_path ? post.image_path.split(/[/\\]/).pop() || null : null,
+      })
+    } catch { /* the card keeps what it had; the post itself is already saved */ }
+  }, [patchProposal])
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -273,6 +291,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           text: event.result || event.error || String(event.subtype),
         })
       }
+      return
+    }
+
+    // A warning from the CLI: worth showing, but the turn carries on and the
+    // answer still arrives after it.
+    if (event.type === 'xpm' && event.subtype === 'notice') {
+      const text = event.notice || ''
+      if (text) push({ kind: 'note', tone: 'info', text })
       return
     }
 
@@ -394,6 +420,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     <AgentContext.Provider value={{
       status, entries, live, busy, draft, setDraft,
       send, stop, newConversation, setAuto, setWeb, refreshStatus, actOnProposal,
+      refreshProposal,
     }}>
       {children}
     </AgentContext.Provider>

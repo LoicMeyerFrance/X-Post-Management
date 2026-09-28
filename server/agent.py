@@ -32,10 +32,12 @@ import threading
 
 import config
 import paths
+import providers
 
 logger = logging.getLogger(__name__)
 
 SESSION_PATH = os.path.join(paths.DATA_DIR, 'agent_session.json')
+PROVIDER_PATH = os.path.join(paths.DATA_DIR, 'agent_provider.json')
 
 # Where this package's modules live. Deliberately derived from __file__ and not
 # from paths.BASE_DIR: BASE_DIR is the *data* directory and moves with XPM_HOME,
@@ -49,6 +51,12 @@ MCP_SERVER_NAME = 'xpost'
 DRAFT_TOOLS = (
     'get_limits', 'list_posts', 'get_post',
     'create_post', 'update_post', 'delete_post',
+    # Reading what the user handed over is as safe as reading their posts:
+    # the server serves one folder they chose, and nothing outside it.
+    'list_documents', 'read_document',
+    # The account's own published history, read-only. Allowed in both modes:
+    # knowing what is already on X is how it avoids repeating it.
+    'list_published', 'get_stats',
 )
 PUBLISH_TOOLS = ('publish_now', 'schedule_on_x')
 
@@ -103,24 +111,18 @@ def _npm_global_candidates():
     return out
 
 
-def find_cli():
-    """Absolute path to the claude executable, or '' when it is not installed."""
-    for name in CLI_NAMES:
-        found = shutil.which(name)
-        if found:
-            return os.path.abspath(found)
-    for candidate in _npm_global_candidates():
-        if os.path.isfile(candidate):
-            return os.path.abspath(candidate)
-    return ''
+def find_cli(provider=None):
+    """Absolute path to the chosen provider's executable, or ''."""
+    spec = providers.get(provider or current_provider())
+    return providers.find_binary(spec['binaries'])
 
 
 _version_cache = {}
 
 
-def cli_version(path=None):
+def cli_version(path=None, provider=None):
     """(major, minor, patch) of the installed CLI, or None when unknown."""
-    path = path or find_cli()
+    path = path or find_cli(provider)
     if not path:
         return None
     if path in _version_cache:
@@ -286,12 +288,45 @@ def start_login():
     return True, 'A window opened to sign in to your Claude account.'
 
 
+def provider_list():
+    """Every agent CLI: whether it is on this machine, and which version.
+
+    Probed for all of them, not only the one in use - the point of the chooser is
+    to show what the user already has before they pick, so a list that only knew
+    about the current choice would be answering the wrong question.
+    """
+    out = []
+    for provider_id in providers.ORDER:
+        spec = providers.get(provider_id)
+        path = providers.find_binary(spec['binaries'])
+        version = cli_version(path, provider_id) if path else None
+        out.append({
+            'id': provider_id,
+            'label': spec['label'],
+            'vendor': spec['vendor'],
+            'available': spec['available'],
+            'unavailable_reason': spec.get('unavailable_reason', ''),
+            'caveat': spec.get('caveat', ''),
+            'installed': bool(path),
+            'path': path,
+            'version': '.'.join(str(part) for part in version) if version else '',
+            'install_command': providers.install_command(provider_id),
+            'docs': spec['docs'],
+            'plan_note': spec['plan_note'],
+        })
+    return out
+
+
 def status():
     """What the settings page and the chat need to know before a run."""
-    path = find_cli()
-    version = cli_version(path) if path else None
+    provider = current_provider()
+    path = find_cli(provider)
+    version = cli_version(path, provider) if path else None
     mode = auth_mode()
-    auth = auth_status() if path else {'known': False, 'logged_in': False}
+    # Only Claude Code reports its own sign-in state; for the others an
+    # installed binary is as much as can be said without spending a turn.
+    auth = (auth_status() if (path and provider == providers.CLAUDE)
+            else {'known': False, 'logged_in': bool(path)})
     _, install_shown = install_command()
 
     # Ready means a turn can actually run: the binary is there, and either the
@@ -300,6 +335,10 @@ def status():
     ready = bool(path) and (auth.get('logged_in') or has_api_key())
 
     return {
+        'provider': provider,
+        'provider_label': providers.get(provider)['label'],
+        'provider_chosen': provider_chosen(),
+        'providers': provider_list(),
         'cli_installed': bool(path),
         'cli_path': path,
         'cli_version': '.'.join(str(n) for n in version) if version else '',
@@ -311,13 +350,55 @@ def status():
         'account_email': auth.get('email', ''),
         'ready': ready,
         'session_id': load_session_id(),
-        'install_command': install_shown,
+        'install_command': providers.install_command(provider) or install_shown,
         'install_hint': install_shown,
         'can_install': True,
     }
 
 
 # --- session continuity ----------------------------------------------------
+
+def current_provider():
+    """The agent CLI the user chose. Claude Code unless they said otherwise."""
+    try:
+        with open(PROVIDER_PATH, 'r', encoding='utf-8') as handle:
+            return providers.normalise(json.load(handle).get('provider'))
+    except (OSError, ValueError, AttributeError):
+        return providers.DEFAULT_PROVIDER
+
+
+def provider_chosen():
+    """Has the user actually picked one, or are we on the default?
+
+    The assistant tab opens on the chooser until they have, so the first thing
+    they do is decide which agent runs - rather than discovering afterwards that
+    something was picked for them.
+    """
+    return os.path.isfile(PROVIDER_PATH)
+
+
+def set_provider(provider_id):
+    """Choose the agent CLI. Refuses one this app will not run."""
+    chosen = providers.normalise(provider_id)
+    spec = providers.get(provider_id)
+    if not spec['available']:
+        raise AgentError(spec.get('unavailable_reason', 'That agent is not available.'))
+    changed = chosen != current_provider() or not provider_chosen()
+    os.makedirs(os.path.dirname(PROVIDER_PATH), exist_ok=True)
+    tmp = PROVIDER_PATH + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as handle:
+        json.dump({'provider': chosen}, handle)
+    os.replace(tmp, PROVIDER_PATH)
+
+    # A conversation belongs to the CLI that held it - but only a real change
+    # ends it. Choosing the agent already in use is a confirmation, not a
+    # switch, and throwing the thread away for that would be a nasty surprise.
+    if changed:
+        clear_session()
+    logger.info("Assistant provider set to %s%s", chosen,
+                '' if changed else ' (unchanged)')
+    return chosen
+
 
 def load_session_id():
     try:
@@ -382,6 +463,9 @@ def mcp_config(api_base, allow_publish):
 # neither can be turned back on this app's own loopback API.
 WEB_TOOLS = ('WebSearch', 'WebFetch')
 
+# The same two capabilities, as Gemini names them.
+GEMINI_WEB_TOOLS = ('google_web_search', 'web_fetch')
+
 
 def _tool_names(allow_publish, web_access=False):
     names = list(DRAFT_TOOLS) + (list(PUBLISH_TOOLS) if allow_publish else [])
@@ -400,6 +484,16 @@ SYSTEM_PROMPT = (
     'When the user asks for several tweets, call create_post once per tweet. '
     'Times are the machine\'s local time and carry no timezone suffix. '
     'Keep replies short: say what you did and name the posts by id. '
+    'The user can hand you documents to work from: call list_documents to see '
+    'what they gave you before saying you have nothing, and read_document to '
+    'read one. You cannot see anything else on their computer. '
+    'You can also read what is already on X for this account, going back years '
+    'and including posts made elsewhere: list_published for the posts '
+    'themselves, get_stats for how they did. Check there before claiming '
+    'something is new, and use it when asked what worked. Those figures come '
+    'from the profile page, which shows a count for some posts and not others, '
+    'so say what you are averaging over rather than implying it covers '
+    'everything. '
     'If a request needs something you have no tool for, say so plainly instead '
     'of improvising.'
 )
@@ -439,17 +533,88 @@ AUTO_TAIL = (
 )
 
 
+def codex_env(api_base, auto, work_dir):
+    """Environment for a Codex run: its config, not the user's."""
+    env = clean_env()
+    env['CODEX_HOME'] = providers.write_codex_config(
+        work_dir, mcp_config(api_base, auto), auto)
+    key = get_api_key()
+    if key:
+        # Codex reads its own variable; the app's stored key is an Anthropic one,
+        # so it is deliberately not passed here.
+        env.pop('OPENAI_API_KEY', None)
+    return env
+
+
+def _codex_command(prompt, cli_path, auto, api_base, web_access, work_dir):
+    """Codex, confined as far as Codex can be.
+
+    Its shell and file tools are core to it and have no disable switch, so this
+    cannot promise what the other two do. What it can do: a read-only sandbox, so
+    nothing is written anywhere; this app's MCP server and no other; and
+    approval_policy = "never" in a config of the app's own, which is what lets
+    the MCP tools run at all - without it Codex cancels them the moment stdin
+    closes, with nobody at a terminal to approve.
+    """
+    tail = (AUTO_TAIL if auto else MANUAL_TAIL) + (WEB_TAIL if web_access else NO_WEB_TAIL)
+    return [
+        cli_path, 'exec',
+        '--json',
+        '--sandbox', 'read-only',
+        '--skip-git-repo-check',
+        '--cd', work_dir,
+        SYSTEM_PROMPT + tail + '\n\n' + prompt,
+    ]
+
+
+def _gemini_command(prompt, cli_path, auto, api_base, web_access, work_dir):
+    """Gemini CLI, confined the same way Claude Code is.
+
+    The mechanism differs, the guarantee does not. Gemini reads
+    .gemini/settings.json from the directory it runs in, so the app writes one
+    into its own workspace: an empty built-in tool allowlist, and this app's MCP
+    server marked trusted so its tools run without a prompt nobody is there to
+    answer. The user's own ~/.gemini settings are never touched.
+    """
+    providers.write_gemini_settings(work_dir, mcp_config(api_base, auto), auto)
+
+    tail = (AUTO_TAIL if auto else MANUAL_TAIL) + (WEB_TAIL if web_access else NO_WEB_TAIL)
+    argv = [
+        cli_path,
+        '--prompt', SYSTEM_PROMPT + tail + '\n\n' + prompt,
+        '--output-format', 'stream-json',
+    ]
+    # Name the tools rather than trusting the mode: --allowed-tools skips the
+    # confirmation for these and nothing else.
+    allowed = list(DRAFT_TOOLS) + (list(PUBLISH_TOOLS) if auto else [])
+    if web_access:
+        allowed += list(GEMINI_WEB_TOOLS)
+    argv += ['--allowed-tools', ','.join(allowed)]
+    # Only this app's server, whatever else the user has configured.
+    argv += ['--allowed-mcp-server-names', MCP_SERVER_NAME]
+    return argv
+
+
 def build_command(prompt, session_id='', auto=False, api_base='http://127.0.0.1:5000',
-                  cli_path=None, version=None, web_access=False):
+                  cli_path=None, version=None, web_access=False, provider=None,
+                  work_dir=None):
     """The argv for one turn. Raises AgentError when the CLI is missing."""
-    cli_path = cli_path or find_cli()
+    provider = providers.normalise(provider or current_provider())
+    spec = providers.get(provider)
+    cli_path = cli_path or find_cli(provider)
     if not cli_path:
-        raise AgentError('Claude Code is not installed. Install it with '
-                         '"npm install -g @anthropic-ai/claude-code", then sign in '
-                         'with "claude" once.')
+        raise AgentError(f'{spec["label"]} is not installed. Install it with '
+                         f'"{providers.install_command(provider)}", then sign in once.')
     if len(prompt) > MAX_PROMPT_CHARS:
         raise AgentError(f'That message is too long ({len(prompt)} characters, '
                          f'maximum {MAX_PROMPT_CHARS}).')
+
+    if provider == providers.GEMINI:
+        return _gemini_command(prompt, cli_path, auto, api_base, web_access,
+                               work_dir or _work_dir())
+    if provider == providers.CODEX:
+        return _codex_command(prompt, cli_path, auto, api_base, web_access,
+                              work_dir or _work_dir())
 
     use_key = has_api_key()
     argv = [cli_path, '-p', prompt,
@@ -577,7 +742,7 @@ def _work_dir():
 
 
 def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True,
-           web_access=False):
+           web_access=False, provider=None):
     """Run one turn, yielding the CLI's stream-json events as dicts.
 
     Also yields a few synthetic events of our own, tagged `xpm`, for errors the
@@ -591,12 +756,16 @@ def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True,
         if is_running():
             raise AgentError('The assistant is already working on something. '
                              'Wait for it to finish, or stop it.')
-        session_id = load_session_id() if resume else ''
+        provider = providers.normalise(provider or current_provider())
+        # Only Claude Code resumes by id; a Gemini turn starts fresh.
+        session_id = (load_session_id()
+                      if (resume and provider == providers.CLAUDE) else '')
         argv = build_command(prompt, session_id=session_id, auto=auto,
-                             api_base=api_base, web_access=web_access)
+                             api_base=api_base, web_access=web_access,
+                             provider=provider)
 
-        logger.info("Agent turn starting (auto=%s, web=%s, resume=%s, auth=%s)",
-                    auto, web_access, bool(session_id), auth_mode())
+        logger.info("Agent turn starting (%s, auto=%s, web=%s, resume=%s, auth=%s)",
+                    provider, auto, web_access, bool(session_id), auth_mode())
         try:
             process = subprocess.Popen(
                 argv,
@@ -604,7 +773,10 @@ def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=_work_dir(),
-                env=child_env(api_base),
+                # Codex needs a CODEX_HOME of our own, holding the config that
+                # lets its MCP calls run at all.
+                env=(codex_env(api_base, auto, _work_dir())
+                     if provider == providers.CODEX else child_env(api_base)),
                 text=True,
                 encoding='utf-8',
                 errors='replace',
@@ -616,12 +788,15 @@ def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True,
         _current['process'] = process
 
     stderr_chunks = []
+    # Plain-text lines on stdout: a CLI that cannot start often says why there
+    # and still exits 0, so these are the only explanation that turn will get.
+    noise_chunks = []
 
     def drain_stderr():
         try:
             for line in process.stderr:
                 stderr_chunks.append(line)
-                logger.debug("claude stderr: %s", line.rstrip())
+                logger.debug("%s stderr: %s", provider, line.rstrip())
         except (OSError, ValueError):
             pass
 
@@ -637,9 +812,16 @@ def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True,
             try:
                 event = json.loads(line)
             except ValueError:
-                # Not every line is guaranteed to be JSON; surface it rather
-                # than dropping it silently.
-                logger.debug("Non-JSON line from claude: %s", line[:200])
+                # Not every line is JSON. Keep it: when the run produces no
+                # result at all, this is what tells the user what went wrong.
+                logger.debug("Non-JSON line from %s: %s", provider, line[:200])
+                if len(noise_chunks) < 40:
+                    noise_chunks.append(line)
+                continue
+
+            # Whatever the provider said, in the shape the interface reads.
+            event = providers.translate_event(provider, event)
+            if event is None:
                 continue
 
             if isinstance(event, dict):
@@ -665,26 +847,52 @@ def stream(prompt, auto=False, api_base='http://127.0.0.1:5000', resume=True,
                 'type': 'xpm',
                 'subtype': 'failed',
                 'exit_code': code,
-                'error': _explain_failure(code, detail),
+                'error': _explain_failure(code, detail, provider,
+                                          '\n'.join(noise_chunks).strip()),
             }
         logger.info("Agent turn finished (exit %s)", code)
 
 
-def _explain_failure(code, stderr_text):
-    """Turn an exit code plus stderr into something a user can act on."""
-    text = (stderr_text or '').strip()
-    lowered = text.lower()
+def _explain_failure(code, stderr_text, provider_id=None, stdout_text=''):
+    """Turn an exit code plus whatever was printed into something actionable.
+
+    Named for the CLI that actually ran: telling a Gemini user to reinstall
+    Claude Code sends them after the wrong thing.
+    """
     if code == 143:
         return 'Stopped.'
-    if 'not logged in' in lowered or 'authentication' in lowered or 'unauthorized' in lowered:
-        if has_api_key():
-            return ('Claude Code rejected the API key. Check it in Settings, or '
-                    'remove it to use the login of the Claude Code on this machine.')
-        return ('Claude Code is not signed in. Run "claude" once in a terminal and '
-                'sign in, or add an API key in Settings.')
+
+    provider = providers.get(provider_id)
+    label = provider['label']
+    binary = (provider.get('binaries') or ('claude',))[0]
+    install = providers.install_command(provider['id'])
+
+    # stdout counts: a CLI that cannot start often prints the reason there and
+    # exits 0 all the same.
+    text = '\n'.join(part for part in ((stderr_text or '').strip(),
+                                       (stdout_text or '').strip()) if part)
+    lowered = text.lower()
+
+    signed_out = ('set an auth method' in lowered
+                  or 'not logged in' in lowered
+                  or 'please sign in' in lowered
+                  or 'authentication' in lowered
+                  or 'unauthorized' in lowered
+                  or 'no credentials' in lowered)
+    if signed_out:
+        if provider['id'] == providers.CLAUDE and has_api_key():
+            return (f'{label} rejected the API key. Check it in Settings, or '
+                    f'remove it to use the login of the {label} on this machine.')
+        return (f'{label} is not signed in. Run "{binary}" once in a terminal '
+                f'and sign in, then try again.')
+
     if 'unknown option' in lowered or 'unknown argument' in lowered:
-        return ('This version of Claude Code does not accept one of the options the '
-                'app uses. Update it with "npm install -g @anthropic-ai/claude-code".')
+        return (f'This version of {label} does not accept one of the options '
+                f'the app uses. Update it with "{install}".')
+
+    if code != 0 and ('not found' in lowered or 'not recognized' in lowered):
+        return f'{label} could not be started. Install it with "{install}".'
+
     if text:
         return text[-600:]
-    return f'Claude Code exited with code {code} and said nothing.'
+    return f'{label} exited with code {code} and said nothing.'

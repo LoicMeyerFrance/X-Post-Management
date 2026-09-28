@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Terminal, LogIn, Loader2, CheckCircle2, AlertCircle, RefreshCw, KeyRound } from 'lucide-react'
+import { Terminal, LogIn, Loader2, CheckCircle2, AlertCircle, RefreshCw, KeyRound, Ban } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSettings } from '@/contexts/SettingsContext'
 import { useNavigation } from '@/contexts/NavigationContext'
@@ -15,9 +15,12 @@ import * as api from '@/lib/api'
 export function AgentSetup({
   status,
   onRefresh,
+  onChosen,
 }: {
   status: api.AgentStatus
   onRefresh: () => Promise<void> | void
+  /** Called once a provider is picked, so the caller can close this panel. */
+  onChosen?: () => void
 }) {
   const { t } = useSettings()
   const { goTo } = useNavigation()
@@ -25,6 +28,21 @@ export function AgentSetup({
   const [loggingIn, setLoggingIn] = useState(false)
   const [checking, setChecking] = useState(false)
   const [output, setOutput] = useState('')
+  const [switching, setSwitching] = useState('')
+
+  const chooseProvider = async (id: string) => {
+    setSwitching(id)
+    try {
+      await api.setAgentProvider(id)
+      await onRefresh()
+      toast.success(t('agent.providerSwitched'))
+      onChosen?.()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('common.serverError'))
+    } finally {
+      setSwitching('')
+    }
+  }
 
   const installed = status.cli_installed
   // A key makes the sign-in unnecessary: the run is billed to that API account.
@@ -78,7 +96,98 @@ export function AgentSetup({
 
   return (
     <div className="max-w-2xl space-y-3">
-      <h3 className="text-sm font-semibold text-text">{t('agent.setupTitle')}</h3>
+      {/* Which CLI drives it. Each meets the same bar, or it is not selectable. */}
+      <h3 className="text-sm font-semibold text-text">{t('agent.providerPick')}</h3>
+      <p className="text-xs leading-relaxed text-text-secondary">
+        {t('agent.providerPickDesc')} {t('agent.providerDesc')}
+      </p>
+      {/* One card each, side by side: the choice is a comparison, and a
+          stacked list made three short options look like a long form. */}
+      <div className="grid gap-2.5 sm:grid-cols-3">
+        {(status.providers || []).map(provider => {
+          const chosen = provider.id === status.provider
+          const busy = switching === provider.id
+          return (
+            <button
+              key={provider.id}
+              onClick={() => provider.available && chooseProvider(provider.id)}
+              disabled={!provider.available || switching !== ''}
+              title={provider.available ? provider.path || undefined : provider.unavailable_reason}
+              className={`flex h-full flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors ${
+                !provider.available
+                  ? 'cursor-not-allowed border-border bg-bg-secondary/50 opacity-60'
+                  : chosen
+                    ? 'border-accent bg-accent/5 ring-1 ring-accent/30'
+                    : 'border-border hover:border-accent/50 hover:bg-bg-hover'
+              }`}
+            >
+              <div className="flex w-full items-center gap-1.5">
+                {!provider.available
+                  ? <Ban size={14} className="shrink-0 text-text-muted" />
+                  : busy
+                    ? <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
+                    : chosen
+                      ? <CheckCircle2 size={14} className="shrink-0 text-accent" />
+                      : <Terminal size={14} className="shrink-0 text-text-muted" />}
+                <span className={`truncate text-[13px] font-semibold ${
+                  chosen ? 'text-accent' : 'text-text'
+                }`}>
+                  {provider.label}
+                </span>
+              </div>
+
+              <span className="text-[11px] text-text-muted">{provider.vendor}</span>
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                {!provider.available ? (
+                  <span className="rounded-full bg-bg-secondary px-2 py-0.5 text-[10px] text-text-muted">
+                    {t('agent.providerBlocked')}
+                  </span>
+                ) : provider.installed ? (
+                  <span className="rounded-full bg-success-light px-2 py-0.5 text-[10px] font-medium text-success">
+                    {t('agent.providerInstalled')}
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-bg-secondary px-2 py-0.5 text-[10px] text-text-muted">
+                    {t('agent.providerMissing')}
+                  </span>
+                )}
+                {provider.version && (
+                  <span className="font-mono text-[10px] text-text-muted">
+                    v{provider.version}
+                  </span>
+                )}
+              </div>
+
+              {/* The reason a card is disabled, and the caveat on a weaker one,
+                  belong on the card - not in a footnote the user scrolls past. */}
+              {!provider.available && (
+                <p className="text-[10px] leading-relaxed text-text-muted">
+                  {provider.unavailable_reason}
+                </p>
+              )}
+              {provider.available && provider.caveat && (
+                <p className="flex items-start gap-1 text-[10px] leading-relaxed text-warning">
+                  <AlertCircle size={10} className="mt-0.5 shrink-0" />
+                  <span>{provider.caveat}</span>
+                </p>
+              )}
+              {provider.available && !provider.installed && provider.install_command && (
+                <code className="mt-auto block w-full overflow-hidden text-ellipsis whitespace-nowrap rounded border border-border bg-bg px-1.5 py-1 font-mono text-[9px] text-text-muted">
+                  {provider.install_command}
+                </code>
+              )}
+              {provider.available && provider.plan_note && (
+                <p className="text-[10px] leading-relaxed text-text-muted">
+                  {provider.plan_note}
+                </p>
+              )}
+            </button>
+          )
+        })}
+      </div>
+
+      <h3 className="pt-1 text-sm font-semibold text-text">{t('agent.setupTitle')}</h3>
       <p className="text-xs leading-relaxed text-text-secondary">
         {t('agent.notInstalledBody')}
       </p>

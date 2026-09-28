@@ -301,6 +301,24 @@ def tool_get_limits(args):
     }
 
 
+def tool_list_documents(args):
+    result = api_get('/api/agent/sources/list')
+    if result.get('error'):
+        raise ApiError(result['error'])
+    return result
+
+
+def tool_read_document(args):
+    name = str(args.get('name') or '').strip()
+    path = '/api/agent/sources/read'
+    if name:
+        path += '?name=' + urllib.parse.quote(name, safe='')
+    result = api_get(path)
+    if result.get('error'):
+        raise ApiError(result['error'])
+    return result
+
+
 def _require_int(args, name):
     raw = args.get(name)
     if raw is None or str(raw).strip() == '':
@@ -310,6 +328,157 @@ def _require_int(args, name):
     except ValueError:
         raise ApiError(f'{name} must be a whole number, got {raw!r}')
 
+
+
+# --- The published timeline, as X reports it -------------------------------
+#
+# The mirror stores every count as text, because that is how the page gives
+# them, and leaves it empty when the page showed none. An empty count is
+# unknown, not zero: averaging it as zero would quietly halve every figure.
+
+def _optional_int(args, name):
+    """A whole number when the caller gave one, None when it left it out."""
+    raw = args.get(name)
+    if raw is None or str(raw).strip() == '':
+        return None
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        raise ApiError(f'{name} must be a whole number, got {raw!r}')
+
+
+def _count(value):
+    """One engagement count as a number, or None when X showed none."""
+    text = '' if value is None else str(value).strip()
+    return int(text) if text.isdigit() else None
+
+
+def _tweet(row):
+    return {
+        'tweet_id': row.get('tweet_id'),
+        'url': row.get('url'),
+        'text': row.get('text') or '',
+        'posted_at': row.get('posted_at'),
+        'views': _count(row.get('views')),
+        'likes': _count(row.get('likes')),
+        'reposts': _count(row.get('reposts')),
+        'replies': _count(row.get('replies')),
+        'is_repost': str(row.get('is_repost') or '0') not in ('0', '', 'None'),
+        'is_reply': str(row.get('is_reply') or '0') not in ('0', '', 'None'),
+        'has_photo': str(row.get('has_photo') or '0') not in ('0', '', 'None'),
+        'has_video': str(row.get('has_video') or '0') not in ('0', '', 'None'),
+        'app_post_id': row.get('app_post_id'),
+    }
+
+
+def _mirror():
+    """Every mirrored tweet for the connected account, newest first."""
+    result = api_get('/api/history/x')
+    tweets = result.get('tweets') if isinstance(result, dict) else None
+    return [_tweet(row) for row in (tweets or []) if isinstance(row, dict)]
+
+
+# Two hundred mirrored tweets came to 67,000 characters in a live run, past
+# what a CLI will accept as one tool result: the agent asked for the timeline
+# and got an error instead. Both the row count and each row's text are capped,
+# and the reply says how to narrow the search rather than leaving it to guess.
+MAX_PUBLISHED_ROWS = 50
+MAX_TEXT_CHARS = 400
+
+
+def tool_list_published(args):
+    limit = _optional_int(args, 'limit') or 20
+    limit = max(1, min(limit, MAX_PUBLISHED_ROWS))
+    contains = str(args.get('contains') or '').strip().lower()
+    sort = (str(args.get('sort') or 'recent').strip().lower() or 'recent')
+    if sort not in ('recent', 'oldest', 'views', 'likes'):
+        raise ApiError("sort must be recent, oldest, views or likes")
+    include_reposts = bool(args.get('include_reposts'))
+
+    rows = _mirror()
+    total = len(rows)
+    if not include_reposts:
+        rows = [row for row in rows if not row['is_repost']]
+    if contains:
+        rows = [row for row in rows if contains in row['text'].lower()]
+
+    matched = len(rows)
+    if sort in ('views', 'likes'):
+        # Unmeasured tweets sort last rather than as zero, so a tweet with no
+        # figure never looks like the worst one.
+        rows.sort(key=lambda row: (row[sort] is None, -(row[sort] or 0)))
+    elif sort == 'oldest':
+        rows.sort(key=lambda row: row['posted_at'] or '')
+    else:
+        rows.sort(key=lambda row: row['posted_at'] or '', reverse=True)
+
+    kept = [_shorten(row) for row in rows[:limit]]
+    result = {
+        'mirrored_total': total,
+        'matched': matched,
+        'returned': len(kept),
+        'sorted_by': sort,
+        'tweets': kept,
+    }
+    if matched > len(kept):
+        result['hint'] = (
+            f'{matched} posts matched; the first {len(kept)} by {sort} are here. '
+            'Narrow it with "contains", or change "sort", rather than asking '
+            'for a bigger page.')
+    return result
+
+
+def _shorten(row):
+    """One tweet, with a long body cut down to something quotable."""
+    text = row['text']
+    if len(text) <= MAX_TEXT_CHARS:
+        return row
+    short = dict(row)
+    short['text'] = text[:MAX_TEXT_CHARS]
+    short['text_truncated'] = True
+    short['full_length'] = len(text)
+    return short
+
+
+def tool_get_stats(args):
+    rows = _mirror()
+    own = [row for row in rows if not row['is_repost']]
+
+    metrics = {}
+    for name in ('views', 'likes', 'reposts', 'replies'):
+        numbers = [row[name] for row in own if row[name] is not None]
+        metrics[name] = {
+            'measured': len(numbers),
+            'total': sum(numbers),
+            'average': round(sum(numbers) / len(numbers), 1) if numbers else None,
+            'best': max(numbers) if numbers else None,
+        }
+
+    dated = [row['posted_at'] for row in rows if row['posted_at']]
+    by_views = sorted((row for row in own if row['views'] is not None),
+                      key=lambda row: -row['views'])
+
+    return {
+        'mirrored_total': len(rows),
+        'own_posts': len(own),
+        'reposts': len(rows) - len(own),
+        'replies': sum(1 for row in own if row['is_reply']),
+        'with_media': sum(1 for row in own if row['has_photo'] or row['has_video']),
+        'oldest': min(dated) if dated else None,
+        'newest': max(dated) if dated else None,
+        # Said plainly, because a total over a third of the posts is not a
+        # total: X only shows a figure on some of them.
+        'note': ('Counts come from the profile page, which shows a figure for '
+                 'some posts and not others. Averages cover only the posts that '
+                 'carried one - see "measured" on each metric.'),
+        'metrics': metrics,
+        'top_by_views': [
+            {'text': row['text'][:180], 'views': row['views'],
+             'likes': row['likes'], 'posted_at': row['posted_at'],
+             'url': row['url'], 'has_media': row['has_photo'] or row['has_video']}
+            for row in by_views[:5]
+        ],
+    }
 
 # --- Tool catalogue --------------------------------------------------------
 
@@ -436,6 +605,82 @@ TOOLS = [
         'publishes': True,
     },
 ]
+
+# Reading what the user handed over. The agent has no file access; these serve
+# one folder the user chose in the app, and refuse anything outside it.
+TOOLS += [
+    {
+        'name': 'list_documents',
+        'title': 'List the documents you were given',
+        'description': ('The documents the user has made available to you, if any. '
+                        'They chose a folder or a file in the app; you cannot see '
+                        'anything else on their computer. Call this before claiming '
+                        'you have nothing to work from.'),
+        'inputSchema': {'type': 'object', 'properties': {}},
+        'handler': tool_list_documents,
+        'publishes': False,
+    },
+    {
+        'name': 'read_document',
+        'title': 'Read one of those documents',
+        'description': ('The text of one document the user gave you, by the name '
+                        'list_documents returned. Long files come back truncated, '
+                        'and the result says so.'),
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'name': {'type': 'string',
+                         'description': 'As listed by list_documents. Omit it when '
+                                        'the user gave a single file.'},
+            },
+        },
+        'handler': tool_read_document,
+        'publishes': False,
+    },
+]
+
+# The mirrored timeline: read-only, and available whether or not this session
+# may publish. Knowing what was already said is how the assistant avoids
+# saying it twice.
+TOOLS += [
+    {
+        'name': 'list_published',
+        'title': 'List published posts',
+        'description': ('Posts already on X for this account, mirrored from the '
+                        'profile - including ones sent from the phone or the '
+                        'website, long before this app. Use it to check whether '
+                        'something has been said before, or to see what did well. '
+                        'Reposts are left out unless asked for.'),
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'limit': {'type': 'integer',
+                          'description': 'How many to return, 1-50 (default 20).'},
+                'contains': {'type': 'string',
+                             'description': 'Keep only posts whose text contains this.'},
+                'sort': {'type': 'string',
+                         'description': 'recent (default), oldest, views or likes.'},
+                'include_reposts': {
+                    'type': 'boolean',
+                    'description': 'Include reposts of other people. Off by default.'},
+            },
+        },
+        'handler': tool_list_published,
+        'publishes': False,
+    },
+    {
+        'name': 'get_stats',
+        'title': 'Engagement so far',
+        'description': ('Totals and averages for views, likes, reposts and '
+                        'replies across the mirrored timeline, plus the five '
+                        'most viewed posts. X only shows a figure on some posts, '
+                        'so each metric reports how many it could measure.'),
+        'inputSchema': {'type': 'object', 'properties': {}},
+        'handler': tool_get_stats,
+        'publishes': False,
+    },
+]
+
 
 TOOLS_BY_NAME = {tool['name']: tool for tool in TOOLS}
 

@@ -342,14 +342,19 @@ def test_agent_command():
     # than a FileNotFoundError from Popen. This machine probably has a real CLI,
     # so pretend it does not.
     real_find = agent.find_cli
-    agent.find_cli = lambda: ''
+    agent.find_cli = lambda *a, **k: ''
     try:
         agent.build_command('hi')
         check('missing CLI refused', False, 'no error raised')
     except agent.AgentError as exc:
         message = str(exc).lower()
         check('missing CLI refused', 'not installed' in message, str(exc))
-        check('missing CLI message says how to install it', 'npm install' in message, str(exc))
+        # The message carries the provider's own install command, whichever that
+        # is on this platform - not a hardcoded npm line.
+        expected = agent.providers.install_command(agent.current_provider()).lower()
+        check('missing CLI message says how to install it',
+              bool(expected) and expected in message, (str(exc), expected))
+        check('and names the agent it means', 'claude code' in message, str(exc))
     finally:
         agent.find_cli = real_find
 
@@ -455,7 +460,7 @@ def test_setup_flow():
 
     # auth_status must degrade rather than raise when there is no CLI.
     real_find = agent.find_cli
-    agent.find_cli = lambda: ''
+    agent.find_cli = lambda *a, **k: ''
     try:
         auth = agent.auth_status()
         check('no CLI means the auth state is unknown, not a crash',
@@ -475,7 +480,7 @@ def test_setup_flow():
             self.stderr = ''
             self.returncode = 0
 
-    agent.find_cli = lambda: os.path.join(TEST_HOME, 'claude-fake')
+    agent.find_cli = lambda *a, **k: os.path.join(TEST_HOME, 'claude-fake')
     try:
         agent.subprocess.run = lambda *a, **k: FakeCompleted('not json at all')
         check('unparseable auth output is not treated as signed in',
@@ -861,6 +866,167 @@ def test_mcp_offline_behaviour():
         mcp_server.API_BASE = saved
 
 
+
+# The mirror stores every count as text and leaves it empty when the profile
+# page showed none, so these rows are shaped the way the real table is - empty
+# strings and all.
+MIRROR_ROWS = [
+    {'tweet_id': '1', 'url': 'https://x.com/me/status/1', 'text': 'Oldest thing',
+     'posted_at': '2024-01-01T10:00:00.000Z', 'views': '1200', 'likes': '30',
+     'reposts': '2', 'replies': '', 'is_repost': '0', 'is_reply': '0',
+     'has_photo': '0', 'has_video': '0'},
+    {'tweet_id': '2', 'url': 'https://x.com/me/status/2', 'text': 'A photo post',
+     'posted_at': '2025-06-01T10:00:00.000Z', 'views': '98', 'likes': '4',
+     'reposts': '', 'replies': '1', 'is_repost': '0', 'is_reply': '0',
+     'has_photo': '1', 'has_video': '0'},
+    {'tweet_id': '3', 'url': 'https://x.com/me/status/3', 'text': 'Never measured',
+     'posted_at': '2026-02-02T10:00:00.000Z', 'views': '', 'likes': '',
+     'reposts': '', 'replies': '', 'is_repost': '0', 'is_reply': '0',
+     'has_photo': '0', 'has_video': '1'},
+    {'tweet_id': '4', 'url': 'https://x.com/other/status/4',
+     'text': 'Somebody else said this', 'posted_at': '2026-03-03T10:00:00.000Z',
+     'views': '50000', 'likes': '900', 'reposts': '10', 'replies': '5',
+     'is_repost': '1', 'is_reply': '0', 'has_photo': '0', 'has_video': '0'},
+]
+
+
+def _with_mirror(call):
+    """Run `call` with the mirror endpoint stubbed, leaving HTTP untouched."""
+    real = mcp_server._request
+    mcp_server._request = lambda *a, **k: {'tweets': MIRROR_ROWS,
+                                           'count': len(MIRROR_ROWS)}
+    try:
+        return call()
+    finally:
+        mcp_server._request = real
+
+
+def test_mirror_tools():
+    section('the published timeline, read back')
+
+    out = _with_mirror(lambda: mcp_server.tool_list_published({}))
+    texts = [t['text'] for t in out['tweets']]
+    check('every mirrored row is counted', out['mirrored_total'] == 4, out)
+    # A repost is somebody else's words; offering them as your own history
+    # would be the wrong answer to "have I said this before".
+    check('reposts are left out by default',
+          'Somebody else said this' not in texts, texts)
+    check('and the rest are there', len(texts) == 3, texts)
+    check('newest first', texts[0] == 'Never measured', texts)
+
+    out = _with_mirror(
+        lambda: mcp_server.tool_list_published({'include_reposts': True}))
+    check('reposts come back when asked for', out['matched'] == 4, out)
+
+    out = _with_mirror(lambda: mcp_server.tool_list_published({'sort': 'oldest'}))
+    check('oldest first when asked',
+          out['tweets'][0]['text'] == 'Oldest thing', out['tweets'][0])
+
+    out = _with_mirror(lambda: mcp_server.tool_list_published({'sort': 'views'}))
+    order = [t['text'] for t in out['tweets']]
+    check('most viewed first', order[0] == 'Oldest thing', order)
+    # An unmeasured post is not the worst post: it has no figure at all.
+    check('an unmeasured post sorts last, not as zero',
+          order[-1] == 'Never measured', order)
+
+    out = _with_mirror(
+        lambda: mcp_server.tool_list_published({'contains': 'PHOTO'}))
+    check('the text filter ignores case', out['matched'] == 1, out)
+    check('and matches the right one',
+          out['tweets'][0]['text'] == 'A photo post', out)
+
+    out = _with_mirror(lambda: mcp_server.tool_list_published({'limit': 1}))
+    check('a limit is honoured', len(out['tweets']) == 1, out)
+    check('while still reporting the total', out['matched'] == 3, out)
+    # Left to guess, the agent asks for a bigger page and hits the same wall.
+    check('and saying how to narrow it', 'contains' in out.get('hint', ''), out)
+    check('the hint names the order actually used',
+          'by recent' in out.get('hint', ''), out.get('hint'))
+
+    out = _with_mirror(lambda: mcp_server.tool_list_published({'sort': 'views',
+                                                              'limit': 1}))
+    check('and not one it did not use', 'by views' in out.get('hint', ''),
+          out.get('hint'))
+
+    # A live run asked for 200 posts and got back 67,000 characters, which the
+    # CLI refused as one tool result. The page is capped for that reason.
+    out = _with_mirror(lambda: mcp_server.tool_list_published({'limit': 9999}))
+    check('an absurd limit is capped',
+          out['returned'] <= mcp_server.MAX_PUBLISHED_ROWS, out)
+
+    long_row = dict(MIRROR_ROWS[0], text='x' * 5000, tweet_id='9')
+    real = mcp_server._request
+    mcp_server._request = lambda *a, **k: {'tweets': [long_row]}
+    try:
+        out = mcp_server.tool_list_published({})
+    finally:
+        mcp_server._request = real
+    tweet = out['tweets'][0]
+    check('a very long post is cut down',
+          len(tweet['text']) == mcp_server.MAX_TEXT_CHARS, len(tweet['text']))
+    check('and says it was cut', tweet['text_truncated'] is True, tweet)
+    check('and how long it really is', tweet['full_length'] == 5000, tweet)
+
+    counted = _with_mirror(lambda: mcp_server.tool_list_published({}))
+    first = counted['tweets'][0]
+    check('an empty count reads as unknown, not zero', first['views'] is None, first)
+    check('a number reads as a number',
+          counted['tweets'][-1]['views'] == 1200, counted['tweets'][-1])
+    check('media is reported', first['has_video'] is True, first)
+
+    try:
+        _with_mirror(lambda: mcp_server.tool_list_published({'sort': 'sideways'}))
+        check('an unknown sort is refused', False, 'it was accepted')
+    except mcp_server.ApiError as exc:
+        check('an unknown sort is refused', 'sort must be' in str(exc), str(exc))
+
+
+def test_mirror_stats():
+    section('engagement, counted honestly')
+
+    stats = _with_mirror(lambda: mcp_server.tool_get_stats({}))
+    check('the repost is not counted as the account\'s own',
+          stats['own_posts'] == 3 and stats['reposts'] == 1, stats)
+    check('media is counted', stats['with_media'] == 2, stats)
+    check('the oldest date is found',
+          stats['oldest'] == '2024-01-01T10:00:00.000Z', stats['oldest'])
+
+    views = stats['metrics']['views']
+    # Two of the three own posts carry a figure. Averaging over three would
+    # report 433 views where the truth is 649 across the ones X measured.
+    check('only measured posts are averaged', views['measured'] == 2, views)
+    check('the total covers those two', views['total'] == 1298, views)
+    check('and the average is over two, not three', views['average'] == 649.0, views)
+    check('the best is the best', views['best'] == 1200, views)
+
+    # A metric nothing carried must not invent a zero average.
+    replies = stats['metrics']['replies']
+    check('a metric with one figure reports it',
+          replies['measured'] == 1 and replies['total'] == 1, replies)
+
+    check('the caveat is stated, not left to be guessed',
+          'measured' in stats['note'], stats['note'])
+    check('the repost is kept out of the top list',
+          all('Somebody else' not in t['text'] for t in stats['top_by_views']),
+          stats['top_by_views'])
+    check('the top list is ordered',
+          [t['views'] for t in stats['top_by_views']] == [1200, 98],
+          stats['top_by_views'])
+
+
+def test_mirror_tools_never_publish():
+    section('reading the timeline is not publishing')
+
+    for name in ('list_published', 'get_stats'):
+        tool = mcp_server.TOOLS_BY_NAME[name]
+        check(f'{name} is not a publishing tool', tool['publishes'] is False)
+        # Read-only, so it is offered in manual mode as well - that is the
+        # whole point: knowing what is already out there before writing more.
+        check(f'{name} is approved in manual mode',
+              f'mcp__xpost__{name}' in agent._tool_names(False, False))
+        check(f'{name} is approved in automatic mode too',
+              f'mcp__xpost__{name}' in agent._tool_names(True, False))
+
 def main():
     print('=' * 62)
     print('  Assistant tests (MCP server, CLI bridge, API routes)')
@@ -876,6 +1042,9 @@ def main():
     test_mcp_argument_validation()
     test_create_post_note_matches_the_mode()
     test_mcp_multipart()
+    test_mirror_tools()
+    test_mirror_stats()
+    test_mirror_tools_never_publish()
     test_agent_command()
     test_agent_key_handling()
     test_web_access()

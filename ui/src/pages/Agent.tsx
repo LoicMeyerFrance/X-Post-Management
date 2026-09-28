@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Bot, Send, Square, RotateCcw, Loader2, Wrench, AlertCircle,
   ShieldCheck, Zap, CheckCircle2,
-  Check, X, CalendarClock, Image as ImageIcon, Trash2, Globe, GlobeLock, Copy,
+  Check, X, CalendarClock, Image as ImageIcon, Trash2, Globe, GlobeLock, Copy, Pencil,
+  FolderOpen, FileText, SlidersHorizontal,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/PageHeader'
@@ -11,6 +12,8 @@ import { useNavigation } from '@/contexts/NavigationContext'
 import { useAgent } from '@/contexts/AgentContext'
 import { AgentSetup } from '@/components/AgentSetup'
 import { copyText } from '@/lib/clipboard'
+import { EditModal } from '@/components/EditModal'
+import * as api from '@/lib/api'
 
 /** Display only. The transcript and the running turn live in AgentContext, so
  *  switching tabs mid-answer neither loses the conversation nor stops it. */
@@ -20,7 +23,84 @@ export function Agent() {
   const {
     status, entries, live, busy, draft, setDraft,
     send, stop, newConversation, setAuto, setWeb, refreshStatus, actOnProposal,
+    refreshProposal,
   } = useAgent()
+
+  // The post being edited before it is approved, and the limit that applies to
+  // it - Premium accounts get far more room, and the modal enforces whichever.
+  const [editing, setEditing] = useState<api.Post | null>(null)
+  const [charLimit, setCharLimit] = useState(280)
+
+  useEffect(() => {
+    api.fetchProfile()
+      .then(p => setCharLimit(p.is_verified ? 25000 : 280))
+      .catch(() => {})
+  }, [])
+
+  // The setup panel is where the provider is chosen, so it has to be
+  // reachable once everything is ready - not only when something is missing.
+  const [showSetup, setShowSetup] = useState(false)
+  const [docs, setDocs] = useState<api.AgentSources | null>(null)
+  const [showDocs, setShowDocs] = useState(false)
+
+  const loadDocs = () => { api.fetchAgentSources().then(setDocs).catch(() => {}) }
+  useEffect(loadDocs, [])
+
+  const chooseDocs = async (kind: 'folder' | 'file') => {
+    try {
+      const picked = kind === 'folder' ? await api.browseFolder() : await api.browseDocument()
+      // A failure and a cancellation both arrive with no path. Telling them
+      // apart matters: treating an error as a cancellation is why a broken
+      // dialog looked like a button that did nothing at all.
+      if (picked.error) {
+        toast.error(picked.error)
+        return
+      }
+      if (!picked.path) return                      // the user cancelled
+      await api.setAgentSources(picked.path)
+      loadDocs()
+      toast.success(t('agent.docsSet'))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('common.serverError'))
+    }
+  }
+
+  const clearDocs = async () => {
+    try {
+      await api.setAgentSources('')
+      loadDocs()
+      toast.success(t('agent.docsCleared'))
+    } catch {
+      toast.error(t('common.serverError'))
+    }
+  }
+
+  const startEditing = async (postId: number) => {
+    try {
+      setEditing(await api.fetchPost(postId))
+    } catch {
+      toast.error(t('common.serverError'))
+    }
+  }
+
+  const saveEdit = async (
+    id: number,
+    data: { text: string; scheduled_at: string; status: api.Post['status'] },
+  ) => {
+    try {
+      await api.updatePost(id, {
+        text: data.text,
+        scheduled_at: data.scheduled_at || null,
+        status: data.status,
+      })
+      // Bring the change back into the card: the tick must send what is shown.
+      await refreshProposal(id)
+      setEditing(null)
+      toast.success(t('agent.proposalEdited'))
+    } catch {
+      toast.error(t('common.serverError'))
+    }
+  }
 
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -52,9 +132,11 @@ export function Agent() {
   }
 
   // --- Claude Code missing: nothing else on the page can work ---
-  // Not ready covers both a missing binary and a CLI that is not signed in.
-  // Showing the chat in either case sent the user's first message into a failure.
-  if (status && !status.ready) {
+  // Pick the agent first. Until that is done the chat is not what the user
+  // needs to see: something would have been chosen for them silently.
+  // Also covers a missing binary and a CLI that is not signed in - showing the
+  // chat in either case sent the first message into a failure.
+  if (status && (!status.provider_chosen || !status.ready)) {
     return (
       <div>
         <PageHeader title={t('agent.title')} description={t('agent.desc')} />
@@ -74,6 +156,27 @@ export function Agent() {
         title={t('agent.title')}
         description={t('agent.desc')}
         actions={
+          <>
+          <button
+            onClick={() => setShowSetup(v => !v)}
+            className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+              showSetup
+                ? 'border-accent bg-accent/5 text-accent'
+                : 'border-border text-text-secondary hover:bg-bg-hover'
+            }`}
+            title={t('agent.providerChange')}
+          >
+            <SlidersHorizontal size={13} />
+            {t('agent.providerChangeShort')}
+            {status?.provider_label && (
+              <span className="text-text-muted">· {status.provider_label}</span>
+            )}
+            {status?.cli_version && (
+              <span className="font-mono text-[10px] text-text-muted">
+                v{status.cli_version}
+              </span>
+            )}
+          </button>
           <button
             onClick={newConversation}
             className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover"
@@ -82,8 +185,19 @@ export function Agent() {
             <RotateCcw size={13} />
             {t('agent.newConversation')}
           </button>
+          </>
         }
       />
+
+      {showSetup && status && (
+        <div className="border-b border-border px-6 py-5">
+          <AgentSetup
+            status={status}
+            onRefresh={refreshStatus}
+            onChosen={() => setShowSetup(false)}
+          />
+        </div>
+      )}
 
       {/* Approval mode. Manual is the default and stays one click away. */}
       <div className="border-b border-border px-6 py-3">
@@ -144,6 +258,7 @@ export function Agent() {
         <p className="mt-1 text-[11px] leading-relaxed text-text-muted">
           {web ? t('agent.webOnDesc') : t('agent.webOffDesc')}
         </p>
+
       </div>
 
       {/* Transcript */}
@@ -276,6 +391,13 @@ export function Agent() {
                             {approveLabel}
                           </button>
                           <button
+                            onClick={() => startEditing(p.postId)}
+                            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text"
+                          >
+                            <Pencil size={12} />
+                            {t('common.edit')}
+                          </button>
+                          <button
                             onClick={() => actOnProposal(index, 'discard')}
                             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[11px] font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-error"
                           >
@@ -357,6 +479,75 @@ export function Agent() {
           </p>
         )}
         <div className="mx-auto flex max-w-3xl items-end gap-2">
+          {/* Where the user hands over something to read, next to where they
+              write - not buried in a settings row above the conversation. */}
+          <div className="relative">
+            <button
+              onClick={() => setShowDocs(v => !v)}
+              title={docs?.root || t('agent.docsNoneDesc')}
+              className={`inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-lg border transition-colors ${
+                docs?.root
+                  ? 'border-accent/50 bg-accent/5 text-accent'
+                  : 'border-border text-text-muted hover:bg-bg-hover hover:text-text'
+              }`}
+            >
+              <FolderOpen size={16} />
+            </button>
+            {docs?.root && (
+              <span className="pointer-events-none absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-semibold text-white">
+                {docs.count}
+              </span>
+            )}
+
+            {showDocs && (
+              <div className="absolute bottom-[52px] left-0 z-20 w-[320px] rounded-lg border border-border bg-bg p-3 shadow-lg">
+                <div className="mb-1.5 text-[11px] font-semibold text-text">
+                  {t('agent.docsLabel')}
+                </div>
+                {docs?.root ? (
+                  <>
+                    <code className="block truncate rounded border border-border bg-bg-secondary px-2 py-1 font-mono text-[10px] text-text">
+                      {docs.root}
+                    </code>
+                    <p className="mt-1.5 text-[10px] text-text-muted">
+                      {docs.exists
+                        ? `${docs.count} ${t('agent.docsCount')}`
+                        : t('agent.docsMissing')}
+                    </p>
+                    <button
+                      onClick={() => { clearDocs(); setShowDocs(false) }}
+                      className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-error"
+                    >
+                      <X size={11} />
+                      {t('agent.docsClear')}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-[10px] leading-relaxed text-text-muted">
+                      {t('agent.docsNoneDesc')}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <button
+                        onClick={() => { chooseDocs('folder'); setShowDocs(false) }}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:bg-bg-hover"
+                      >
+                        <FolderOpen size={11} />
+                        {t('agent.docsChooseFolder')}
+                      </button>
+                      <button
+                        onClick={() => { chooseDocs('file'); setShowDocs(false) }}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:bg-bg-hover"
+                      >
+                        <FileText size={11} />
+                        {t('agent.docsChooseFile')}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
           <textarea
             value={draft}
             onChange={e => setDraft(e.target.value)}
@@ -384,6 +575,14 @@ export function Agent() {
             </button>
           )}
         </div>
+        {editing && (
+          <EditModal
+            post={editing}
+            charLimit={charLimit}
+            onSave={saveEdit}
+            onClose={() => setEditing(null)}
+          />
+        )}
         <button
           onClick={() => goTo('settings', 'assistant')}
           className="mx-auto mt-2 block max-w-3xl text-[11px] text-text-muted underline-offset-2 hover:text-text-secondary hover:underline"

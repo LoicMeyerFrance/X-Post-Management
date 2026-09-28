@@ -30,6 +30,7 @@ import database
 import paths
 import scheduler
 import security
+import sources
 
 BASE_DIR = paths.BASE_DIR
 FRONTEND_DIR = paths.FRONTEND_DIR
@@ -925,6 +926,59 @@ def api_agent_web():
     return jsonify({'web_access': enabled})
 
 
+# --- documents the user hands to the assistant ---
+#
+# The agent has no file access at all. These endpoints serve exactly one folder
+# or file the user picked, and sources.py refuses anything that resolves outside
+# it - so "read my notes" is possible without "read my disk" becoming possible.
+
+@app.route('/api/agent/sources', methods=['GET'])
+def api_agent_sources():
+    return jsonify(sources.describe())
+
+
+@app.route('/api/agent/sources', methods=['POST'])
+def api_agent_sources_set():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Expected a JSON object'}), 400
+    try:
+        return jsonify(sources.set_root(data.get('path', '')))
+    except sources.SourceError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
+@app.route('/api/agent/sources/list', methods=['GET'])
+def api_agent_sources_list():
+    try:
+        return jsonify(sources.list_files())
+    except sources.SourceError as exc:
+        return jsonify({'error': str(exc)}), 200
+
+
+@app.route('/api/agent/sources/read', methods=['GET'])
+def api_agent_sources_read():
+    try:
+        return jsonify(sources.read_file(request.args.get('name', '')))
+    except sources.SourceError as exc:
+        return jsonify({'error': str(exc)}), 200
+    except OSError as exc:
+        return jsonify({'error': f'Could not read it: {exc}'}), 200
+
+
+@app.route('/api/agent/provider', methods=['POST'])
+def api_agent_provider():
+    """Choose which agent CLI drives the assistant."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data.get('provider'):
+        return jsonify({'error': 'Expected {"provider": "claude"|"gemini"}'}), 400
+    try:
+        chosen = agent.set_provider(data['provider'])
+    except agent.AgentError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify({'provider': chosen})
+
+
 @app.route('/api/agent/stop', methods=['POST'])
 def api_agent_stop():
     return jsonify({'stopped': agent.stop()})
@@ -1200,6 +1254,24 @@ def api_browse_file():
     return _file_dialog(
         'OPEN_DIALOG',
         file_types=('Executable Files (*.exe)', 'All Files (*.*)'),
+    )
+
+
+@app.route('/api/browse/document', methods=['POST'])
+def api_browse_document():
+    """Pick a document for the assistant to read.
+
+    Its own dialog rather than the one above: that one filters for executables,
+    because it exists to locate Chrome, and it would open showing no documents
+    at all.
+    """
+    # Semicolons, not spaces: pywebview validates the filter against
+    # 'Description (*.ext[;*.ext...])' and rejects anything else, which surfaced
+    # as a dialog that simply never opened.
+    readable = ';'.join('*' + extension for extension in sorted(sources.TEXT_EXTENSIONS))
+    return _file_dialog(
+        'OPEN_DIALOG',
+        file_types=(f'Text documents ({readable})', 'All Files (*.*)'),
     )
 
 

@@ -45,6 +45,8 @@ jobs:
           python tests/test_timeline.py
           python tests/test_accounts.py
           python tests/test_paths.py
+          python tests/test_sources.py
+          python tests/test_providers.py
 
       - name: Audit frontend dependencies
         working-directory: ui

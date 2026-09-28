@@ -267,6 +267,13 @@ export async function browseFile(): Promise<{ path: string | null; error?: strin
   return handleResponse<{ path: string | null; error?: string }>(res)
 }
 
+/** Pick a document to read. Filters for text, unlike browseFile which looks for
+ *  an executable because it exists to locate Chrome. */
+export async function browseDocument(): Promise<{ path: string | null; error?: string }> {
+  const res = await fetch(`${BASE}/api/browse/document`, { method: 'POST' })
+  return handleResponse<{ path: string | null; error?: string }>(res)
+}
+
 export async function detectChrome(): Promise<{ chrome_path: string | null; profile_dir: string | null; detected: boolean }> {
   const res = await fetch(`${BASE}/api/detect-chrome`)
   return handleResponse<{ chrome_path: string | null; profile_dir: string | null; detected: boolean }>(res)
@@ -355,7 +362,39 @@ export async function syncXHistory(maxTweets?: number): Promise<XSyncResult> {
 // One turn is a POST whose body is a stream of server-sent events, so the reply
 // appears as it is written instead of after a long silence.
 
+export interface AgentProvider {
+  id: string
+  label: string
+  vendor: string
+  /** False when this app will not run it; `unavailable_reason` says why. */
+  available: boolean
+  unavailable_reason: string
+  /** A real limitation of this agent, shown next to it rather than hidden. */
+  caveat: string
+  installed: boolean
+  /** Where it was found, and which version - detected before you choose. */
+  path: string
+  version: string
+  install_command: string
+  docs: string
+  plan_note: string
+}
+
+export async function setAgentProvider(provider: string): Promise<{ provider: string }> {
+  const res = await fetch(`${BASE}/api/agent/provider`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider }),
+  })
+  return handleResponse<{ provider: string }>(res)
+}
+
 export interface AgentStatus {
+  provider: string
+  provider_label: string
+  /** False until the user has picked one; the tab opens on the chooser. */
+  provider_chosen: boolean
+  providers: AgentProvider[]
   cli_installed: boolean
   cli_path: string
   cli_version: string
@@ -426,6 +465,28 @@ export async function setAgentWeb(webAccess: boolean): Promise<{ web_access: boo
   return handleResponse<{ web_access: boolean }>(res)
 }
 
+export interface AgentSources {
+  root: string
+  kind: 'folder' | 'file' | ''
+  exists: boolean
+  count: number
+}
+
+export async function fetchAgentSources(): Promise<AgentSources> {
+  const res = await fetch(`${BASE}/api/agent/sources`)
+  return handleResponse<AgentSources>(res)
+}
+
+/** Point the assistant at a folder or a file, or pass '' to take it away. */
+export async function setAgentSources(path: string): Promise<{ root: string; kind: string; error?: string }> {
+  const res = await fetch(`${BASE}/api/agent/sources`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  return handleResponse<{ root: string; kind: string }>(res)
+}
+
 export async function stopAgent(): Promise<{ stopped: boolean }> {
   const res = await fetch(`${BASE}/api/agent/stop`, { method: 'POST' })
   return handleResponse<{ stopped: boolean }>(res)
@@ -459,6 +520,8 @@ export interface AgentEvent {
   event?: { type?: string; delta?: { type?: string; text?: string } }
   result?: string
   error?: string
+  /** A warning the CLI raised without ending the turn. */
+  notice?: string
   total_cost_usd?: number
   num_turns?: number
   duration_ms?: number
